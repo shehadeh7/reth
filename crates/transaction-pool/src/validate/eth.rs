@@ -38,7 +38,14 @@ use std::{
     },
     time::Instant,
 };
+use std::str::FromStr;
+use alloy_primitives::{hex, Address, U256};
 use tokio::sync::Mutex;
+use aml_engine::aml::{AML_EVALUATOR};
+use alloy_sol_types::{sol, SolCall};
+sol! {
+    function transfer(address to, uint256 amount);
+}
 
 /// Validator for Ethereum transactions.
 /// It is a [`TransactionValidator`] implementation that validates ethereum transaction.
@@ -267,6 +274,7 @@ where
         transaction: Tx,
         maybe_state: &mut Option<Box<dyn AccountInfoReader>>,
     ) -> TransactionValidationOutcome<Tx> {
+        println!("calling validate one with provider");
         match self.validate_one_no_state(origin, transaction) {
             Ok(transaction) => {
                 // stateless checks passed, pass transaction down stateful validation pipeline
@@ -567,6 +575,7 @@ where
             }
         };
 
+
         // Unless Prague is active, the signer account shouldn't have bytecode.
         //
         // If Prague is active, only EIP-7702 bytecode is allowed for the sender.
@@ -688,6 +697,52 @@ where
             }
         }
 
+        println!("\n\ntransaction is : {:?}", transaction);
+        println!("transaction account is : {:?}", account);
+
+        // adding additional filtering logic
+        if transaction.input().len() >= 4 {
+            let selector = &transaction.input()[0..4];
+
+            if selector == &hex!("a9059cbb") {
+                if let Ok(decoded) = transferCall::abi_decode(&transaction.input()) {
+                    let sender = transaction.sender();
+                    let recipient = decoded.to;
+                    let amount = decoded.amount;
+
+                    println!("Account is {:?}", account);
+                    println!("Sender {:?}", sender);
+
+                    // Check if both are EOAs (not contracts)
+                    let sender_is_contract = account.bytecode_hash.is_some();
+
+                    if let Ok(Some(recipient_basic_account)) = state.basic_account(&recipient) {
+                        let recipient_is_contract = recipient_basic_account.bytecode_hash.is_some();
+                        println!("sender_is_contract: {:?}, recipient_is_contract: {:?}", sender_is_contract, recipient_is_contract);
+
+
+                        if !sender_is_contract && !recipient_is_contract {
+                            println!(
+                                "ERC20 transfer from {:?} -> {:?} amount: {:?}",
+                                sender, recipient, amount
+                            );
+
+                            if amount == U256::from_str("80000000000000000000").unwrap() {
+                                print!("Blocked ERC20 transfer of exactly 80 ether");
+                                return TransactionValidationOutcome::Invalid(
+                                    transaction,
+                                    InvalidPoolTransactionError::AMLRulesFailed);
+                            }
+                        }
+                    } else {
+                        // Log or skip if needed
+                        println!("Skipping tx — could not load recipient account {:?}", recipient);
+                    }
+
+                }
+            }
+        }
+
         let authorities = transaction.authorization_list().map(|auths| {
             auths.iter().flat_map(|auth| auth.recover_authority()).collect::<Vec<_>>()
         });
@@ -714,11 +769,55 @@ where
         &self,
         transactions: Vec<(TransactionOrigin, Tx)>,
     ) -> Vec<TransactionValidationOutcome<Tx>> {
+        let aml_evaluator = AML_EVALUATOR
+            .get()
+            .expect("AML_EVALUATOR not initialized")
+            .read()
+            .expect("poisoned lock");
+
+        let txs: Vec<(TransactionOrigin, Tx)> = transactions.into_iter().collect();
+
+        // Collect AML-relevant tx info with their original indexes
+        let aml_txs: Vec<(usize, Address, Address, U256)> = txs
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, (_, tx))| {
+                if tx.input().len() < 4 || &tx.input()[0..4] != &hex!("a9059cbb") {
+                    return None;
+                }
+                let decoded = transferCall::abi_decode(&tx.input()).ok()?;
+                let sender = tx.sender();
+                let amount = decoded.amount;
+
+
+                Option::from((idx, sender, decoded.to, decoded.amount))
+            })
+            .collect();
+
+        // Run AML batch check
+        let aml_inputs = aml_txs.iter().map(|&(_, s, r, a)| (s, r, a)).collect::<Vec<_>>();
+        let aml_results = aml_evaluator.check_compliance_batch(&aml_inputs);
+
+        drop(aml_evaluator); // release lock ASAP
+
+        // Map index to AML result for quick lookup
+        let aml_map: std::collections::HashMap<usize, (bool, Option<&'static str>)> =
+            aml_txs.into_iter().zip(aml_results).map(|((idx, _, _, _,), res)| (idx, res)).collect();
+
         let mut provider = None;
-        transactions
-            .into_iter()
-            .map(|(origin, tx)| self.validate_one_with_provider(origin, tx, &mut provider))
+        txs.into_iter()
+            .enumerate()
+            .map(|(idx, (origin, tx))| {
+                match aml_map.get(&idx) {
+                    Some(&(false, _)) => TransactionValidationOutcome::Invalid(
+                        tx,
+                        InvalidPoolTransactionError::AMLRulesFailed,
+                    ),
+                    _ => self.validate_one_with_provider(origin, tx, &mut provider),
+                }
+            })
             .collect()
+
     }
 
     /// Validates all given transactions with origin.
@@ -727,10 +826,53 @@ where
         origin: TransactionOrigin,
         transactions: impl IntoIterator<Item = Tx> + Send,
     ) -> Vec<TransactionValidationOutcome<Tx>> {
+        let aml_evaluator = AML_EVALUATOR
+            .get()
+            .expect("AML_EVALUATOR not initialized")
+            .read()
+            .expect("poisoned lock");
+
+        let txs: Vec<Tx> = transactions.into_iter().collect();
+
+        // Collect AML-relevant tx info with their original indexes
+        let aml_txs: Vec<(usize, Address, Address, U256)> = txs
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, tx)| {
+                if tx.input().len() < 4 || &tx.input()[0..4] != &hex!("a9059cbb") {
+                    return None;
+                }
+                let decoded = transferCall::abi_decode(&tx.input()).ok()?;
+                let sender = tx.sender();
+                let amount = decoded.amount;
+
+
+                Option::from((idx, sender, decoded.to, decoded.amount))
+            })
+            .collect();
+
+        // Run AML batch check
+        let aml_inputs = aml_txs.iter().map(|&(_, s, r, a)| (s, r, a)).collect::<Vec<_>>();
+        let aml_results = aml_evaluator.check_compliance_batch(&aml_inputs);
+
+        drop(aml_evaluator); // release lock ASAP
+
+        // Map index to AML result for quick lookup
+        let aml_map: std::collections::HashMap<usize, (bool, Option<&'static str>)> =
+            aml_txs.into_iter().zip(aml_results).map(|((idx, _, _, _,), res)| (idx, res)).collect();
+
         let mut provider = None;
-        transactions
-            .into_iter()
-            .map(|tx| self.validate_one_with_provider(origin, tx, &mut provider))
+        txs.into_iter()
+            .enumerate()
+            .map(|(idx, tx)| {
+                match aml_map.get(&idx) {
+                    Some(&(false, _)) => TransactionValidationOutcome::Invalid(
+                        tx,
+                        InvalidPoolTransactionError::AMLRulesFailed,
+                    ),
+                    _ => self.validate_one_with_provider(origin, tx, &mut provider),
+                }
+            })
             .collect()
     }
 

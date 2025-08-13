@@ -267,6 +267,8 @@ impl NodeState {
                     ?elapsed,
                     "Block added to canonical chain"
                 );
+                // TODO: (ms) add logic to update AML profiles here?
+
             }
             BeaconConsensusEngineEvent::CanonicalChainCommitted(head, elapsed) => {
                 self.latest_block = Some(head.number());

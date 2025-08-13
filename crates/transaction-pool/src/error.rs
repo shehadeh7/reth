@@ -4,6 +4,7 @@ use std::any::Any;
 
 use alloy_eips::eip4844::BlobTransactionValidationError;
 use alloy_primitives::{Address, TxHash, U256};
+use tracing::error;
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 
 /// Transaction pool result type.
@@ -273,6 +274,9 @@ pub enum InvalidPoolTransactionError {
         /// Minimum required priority fee.
         minimum_priority_fee: u128,
     },
+    /// Custom error
+    #[error("AML rules failed for transaction")]
+    AMLRulesFailed,
 }
 
 // === impl InvalidPoolTransactionError ===
@@ -344,6 +348,7 @@ impl InvalidPoolTransactionError {
             Self::Overdraft { .. } => false,
             Self::Other(err) => err.is_bad_transaction(),
             Self::Eip2681 => true,
+            Self::AMLRulesFailed => true,
             Self::Eip4844(eip4844_err) => {
                 match eip4844_err {
                     Eip4844PoolTransactionError::MissingEip4844BlobSidecar => {

@@ -170,7 +170,7 @@ members = [
     "examples/custom-beacon-withdrawals",
     "testing/ef-tests/",
     "testing/testing-utils",
-    "crates/tracing-otlp",
+    "crates/tracing-otlp", "crates/aml-engine/",
 ]
 default-members = ["bin/reth"]
 exclude = ["docs/cli"]
@@ -454,6 +454,9 @@ reth-trie-sparse-parallel = { path = "crates/trie/sparse-parallel" }
 reth-zstd-compressors = { path = "crates/storage/zstd-compressors", default-features = false }
 reth-ress-protocol = { path = "crates/ress/protocol" }
 reth-ress-provider = { path = "crates/ress/provider" }
+
+# custom aml engine
+aml-engine = { path = "crates/aml-engine" }
 
 # revm
 revm = { version = "28.0.1", default-features = false }

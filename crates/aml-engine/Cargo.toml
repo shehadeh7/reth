@@ -1,12 +1,12 @@
 [package]
-name = "reth-transaction-pool"
+name = "aml-engine"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
-description = "Transaction pool implementation"
+description = "AML engine implementation"
 
 [lints]
 workspace = true
@@ -48,8 +48,7 @@ thiserror.workspace = true
 tracing.workspace = true
 rustc-hash.workspace = true
 schnellru.workspace = true
-serde = { workspace = true, features = ["derive", "rc"] }
-serde_json.workspace = true
+serde = { workspace = true, features = ["derive", "rc"], optional = true }
 bitflags.workspace = true
 auto_impl.workspace = true
 smallvec.workspace = true
@@ -59,9 +58,6 @@ rand = { workspace = true, optional = true }
 paste = { workspace = true, optional = true }
 proptest = { workspace = true, optional = true }
 proptest-arbitrary-interop = { workspace = true, optional = true }
-
-# custom aml
-aml-engine.workspace = true
 
 [dev-dependencies]
 reth-provider = { workspace = true, features = ["test-utils"] }
@@ -79,6 +75,7 @@ tokio = { workspace = true, features = ["rt-multi-thread"] }
 
 [features]
 serde = [
+    "dep:serde",
     "reth-execution-types/serde",
     "reth-eth-wire-types/serde",
     "alloy-consensus/serde",
@@ -121,23 +118,3 @@ arbitrary = [
     "reth-ethereum-primitives/arbitrary",
     "revm-primitives/arbitrary",
 ]
-
-[[bench]]
-name = "truncate"
-required-features = ["test-utils", "arbitrary"]
-harness = false
-
-[[bench]]
-name = "reorder"
-required-features = ["test-utils", "arbitrary"]
-harness = false
-
-[[bench]]
-name = "priority"
-required-features = ["arbitrary"]
-harness = false
-
-[[bench]]
-name = "canonical_state_change"
-required-features = ["test-utils", "arbitrary"]
-harness = false
