@@ -118,7 +118,7 @@ async fn main() -> eyre::Result<()> {
 
     // create a custom chain spec
     let spec = ChainSpec::builder()
-        .chain(Chain::mainnet())
+        .chain(Chain::dev())
         .genesis(Genesis::default())
         .london_activated()
         .paris_activated()
@@ -135,7 +135,7 @@ async fn main() -> eyre::Result<()> {
         // configure the node with regular ethereum types
         .with_types::<EthereumNode>()
         // use default ethereum components but with our executor
-        .with_components(EthereumNode::components().executor(MyExecutorBuilder::default()))
+        .with_components(EthereumNode::components())
         .with_add_ons(EthereumAddOns::default())
         .launch()
         .await

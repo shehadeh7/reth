@@ -697,48 +697,34 @@ where
             }
         }
 
-        println!("\n\ntransaction is : {:?}", transaction);
-        println!("transaction account is : {:?}", account);
+        let aml_evaluator = AML_EVALUATOR
+            .get()
+            .expect("AML_EVALUATOR not initialized")
+            .read()
+            .expect("poisoned lock");
 
-        // adding additional filtering logic
-        if transaction.input().len() >= 4 {
-            let selector = &transaction.input()[0..4];
+        // TODO: (ms) add single transaction check back here. Move the code into fn for checking
+        if transaction.input().len() >= 4 && &transaction.input()[0..4] == &hex!("a9059cbb") {
+            if let Ok(decoded) = transferCall::abi_decode(&transaction.input()) {
+                let sender = transaction.sender();
+                let recipient = decoded.to;
+                let amount = decoded.amount;
 
-            if selector == &hex!("a9059cbb") {
-                if let Ok(decoded) = transferCall::abi_decode(&transaction.input()) {
-                    let sender = transaction.sender();
-                    let recipient = decoded.to;
-                    let amount = decoded.amount;
+                println!("amount is {:?}", amount);
 
-                    println!("Account is {:?}", account);
-                    println!("Sender {:?}", sender);
+                let aml_input = vec![(sender, recipient, amount)];
+                let aml_result = aml_evaluator.check_compliance_batch(&aml_input);
 
-                    // Check if both are EOAs (not contracts)
-                    let sender_is_contract = account.bytecode_hash.is_some();
-
-                    if let Ok(Some(recipient_basic_account)) = state.basic_account(&recipient) {
-                        let recipient_is_contract = recipient_basic_account.bytecode_hash.is_some();
-                        println!("sender_is_contract: {:?}, recipient_is_contract: {:?}", sender_is_contract, recipient_is_contract);
-
-
-                        if !sender_is_contract && !recipient_is_contract {
-                            println!(
-                                "ERC20 transfer from {:?} -> {:?} amount: {:?}",
-                                sender, recipient, amount
-                            );
-
-                            if amount == U256::from_str("80000000000000000000").unwrap() {
-                                print!("Blocked ERC20 transfer of exactly 80 ether");
-                                return TransactionValidationOutcome::Invalid(
-                                    transaction,
-                                    InvalidPoolTransactionError::AMLRulesFailed);
-                            }
-                        }
+                if let Some((ok, reason)) = aml_result.first() {
+                    if !ok {
+                        print!("Blocked by AML: {:?}", reason);
+                        return TransactionValidationOutcome::Invalid(
+                            transaction,
+                            InvalidPoolTransactionError::AMLRulesFailed);
+                        // return or reject transaction here
                     } else {
-                        // Log or skip if needed
-                        println!("Skipping tx — could not load recipient account {:?}", recipient);
+                        println!("AML passed ✅");
                     }
-
                 }
             }
         }
@@ -769,6 +755,7 @@ where
         &self,
         transactions: Vec<(TransactionOrigin, Tx)>,
     ) -> Vec<TransactionValidationOutcome<Tx>> {
+        println!("hello from validate batch");
         let aml_evaluator = AML_EVALUATOR
             .get()
             .expect("AML_EVALUATOR not initialized")
@@ -826,6 +813,7 @@ where
         origin: TransactionOrigin,
         transactions: impl IntoIterator<Item = Tx> + Send,
     ) -> Vec<TransactionValidationOutcome<Tx>> {
+        println!("hello from validate batch with origin");
         let aml_evaluator = AML_EVALUATOR
             .get()
             .expect("AML_EVALUATOR not initialized")

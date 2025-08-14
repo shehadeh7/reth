@@ -7253,6 +7253,7 @@ name = "reth"
 version = "1.6.0"
 dependencies = [
  "alloy-rpc-types",
+ "aml-engine",
  "aquamarine",
  "backon",
  "clap",
@@ -8041,6 +8042,7 @@ dependencies = [
  "alloy-rlp",
  "alloy-rpc-types-engine",
  "alloy-sol-types",
+ "aml-engine",
  "assert_matches",
  "codspeed-criterion-compat",
  "crossbeam-channel",
@@ -9114,6 +9116,8 @@ dependencies = [
  "alloy-eips",
  "alloy-primitives",
  "alloy-rpc-types-engine",
+ "alloy-sol-types",
+ "aml-engine",
  "derive_more",
  "futures",
  "humantime",

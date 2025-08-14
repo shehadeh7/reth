@@ -48,6 +48,9 @@ reth-tokio-util.workspace = true
 reth-ress-protocol.workspace = true
 reth-ress-provider.workspace = true
 
+# custom aml
+aml-engine.workspace = true
+
 # alloy
 alloy-rpc-types = { workspace = true, features = ["engine"] }
 

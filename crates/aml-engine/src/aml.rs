@@ -4,19 +4,39 @@ use alloy_primitives::{Address, U256};
 
 const TIME_WINDOW_SECS: u64 = 7 * 24 * 60 * 60; // 7 days
 
-const MAX_SINGLE_TX_AMOUNT: u128 = 10_000;
-const MAX_TOTAL_SENT_7D: u128 = 100_000;
-const MAX_TOTAL_RECEIVED_7D: u128 = 100_000;
+// 100 * 1e18 = 100000000000000000000
+pub const MAX_SINGLE_TX_AMOUNT: U256 = U256::from_limbs([
+    0x6BC75E2D63100000, // Limb 0 (LSB)
+    0x5, // Limb 1
+    0x0,                 // Limb 2
+    0x0,                 // Limb 3 (MSB)
+]);
+
+// 1_000 * 1e18 = 1000000000000000000000
+pub const MAX_TOTAL_SENT_7D: U256 = U256::from_limbs([
+    0x35C9ADC5DEA00000,
+    0x36,
+    0x0,
+    0x0,
+]);
+
+// 10_000 * 1e18 = 10000000000000000000000
+pub const MAX_TOTAL_RECEIVED_7D: U256 = U256::from_limbs([
+    0x19E0C9BAB2400000,
+    0x21E,
+    0x0,
+    0x0,
+]);
 
 pub static AML_EVALUATOR: OnceLock<RwLock<AmlEvaluator>> = OnceLock::new();
 
 #[derive(Debug, Clone)]
 pub struct AccountProfile {
     pub address: Address,
-    pub sent_amounts: VecDeque<(u128)>,
-    pub recv_amounts: VecDeque<(u128)>,
-    pub total_sent: u128,
-    pub total_received: u128,
+    pub sent_amounts: VecDeque<(U256)>,
+    pub recv_amounts: VecDeque<(U256)>,
+    pub total_sent: U256,
+    pub total_received: U256,
 }
 
 impl AccountProfile {
@@ -25,8 +45,8 @@ impl AccountProfile {
             address,
             sent_amounts: VecDeque::new(),
             recv_amounts: VecDeque::new(),
-            total_sent: 0,
-            total_received: 0,
+            total_sent: U256::from(0),
+            total_received: U256::from(0),
         }
     }
 
@@ -66,7 +86,7 @@ impl AmlEvaluator {
     fn check_compliance_internal(
         sender_profile: &AccountProfile,
         recipient_profile: &AccountProfile,
-        amount: u128,
+        amount: U256,
         sender_eq_recipient: bool,
     ) -> Option<&'static str> {
         if amount > MAX_SINGLE_TX_AMOUNT {
@@ -92,7 +112,7 @@ impl AmlEvaluator {
 
     fn update_sender_profile(
         profile: &mut AccountProfile,
-        amount: u128,
+        amount: U256,
     ) {
         profile.total_sent += amount;
         profile.sent_amounts.push_back((amount));
@@ -100,7 +120,7 @@ impl AmlEvaluator {
 
     fn update_recipient_profile(
         profile: &mut AccountProfile,
-        amount: u128,
+        amount: U256,
     ) {
         profile.total_received += amount;
         profile.recv_amounts.push_back(amount);
@@ -128,13 +148,13 @@ impl AmlEvaluator {
                     .or_insert_with(|| AccountProfile::new(sender));
 
 
-                let reason = Self::check_compliance_internal(profile, profile, amount_u128, true);
+                let reason = Self::check_compliance_internal(profile, profile, amount, true);
 
                 if let Some(reason) = reason {
                     results.push((false, Some(reason)));
                 } else {
-                    Self::update_sender_profile(profile, amount_u128);
-                    Self::update_recipient_profile(profile, amount_u128);
+                    Self::update_sender_profile(profile, amount);
+                    Self::update_recipient_profile(profile, amount);
                     results.push((true, None));
                 }
             } else {
@@ -176,26 +196,21 @@ impl AmlEvaluator {
         recipient: Address,
         amount: U256,
     ) {
-        let amount_u128 = match amount.try_into() {
-            Ok(v) => v,
-            Err(_) => return,
-        };
-
         if sender == recipient {
             let profile = self
                 .profiles
                 .entry(sender)
                 .or_insert_with(|| AccountProfile::new(sender));
 
-            Self::update_sender_profile(profile, amount_u128);
-            Self::update_recipient_profile(profile, amount_u128);
+            Self::update_sender_profile(profile, amount);
+            Self::update_recipient_profile(profile, amount);
         } else {
             {
                 let sender_profile = self
                     .profiles
                     .entry(sender)
                     .or_insert_with(|| AccountProfile::new(sender));
-                Self::update_sender_profile(sender_profile, amount_u128);
+                Self::update_sender_profile(sender_profile, amount);
             }
 
             {
@@ -203,7 +218,7 @@ impl AmlEvaluator {
                     .profiles
                     .entry(recipient)
                     .or_insert_with(|| AccountProfile::new(recipient));
-                Self::update_recipient_profile(recipient_profile, amount_u128);
+                Self::update_recipient_profile(recipient_profile, amount);
             }
         }
     }

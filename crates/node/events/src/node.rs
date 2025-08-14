@@ -1,15 +1,15 @@
 //! Support for handling events emitted by node components.
 
 use crate::cl::ConsensusLayerHealthEvent;
-use alloy_consensus::{constants::GWEI_TO_WEI, BlockHeader};
-use alloy_primitives::{BlockNumber, B256};
+use alloy_consensus::{constants::GWEI_TO_WEI, BlockHeader, Transaction};
+use alloy_primitives::{hex, BlockNumber, B256};
 use alloy_rpc_types_engine::ForkchoiceState;
 use futures::Stream;
 use reth_engine_primitives::{
     BeaconConsensusEngineEvent, ConsensusEngineLiveSyncProgress, ForkchoiceStatus,
 };
 use reth_network_api::PeersInfo;
-use reth_primitives_traits::{format_gas, format_gas_throughput, BlockBody, NodePrimitives};
+use reth_primitives_traits::{format_gas, format_gas_throughput, BlockBody, NodePrimitives, SignedTransaction};
 use reth_prune_types::PrunerEvent;
 use reth_stages::{EntitiesCheckpoint, ExecOutput, PipelineEvent, StageCheckpoint, StageId};
 use reth_static_file_types::StaticFileProducerEvent;
@@ -20,8 +20,14 @@ use std::{
     task::{Context, Poll},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+use alloy_consensus::transaction::SignerRecoverable;
 use tokio::time::Interval;
 use tracing::{debug, info, warn};
+use aml_engine::aml::{AML_EVALUATOR};
+use alloy_sol_types::{sol, SolCall};
+sol! {
+    function transfer(address to, uint256 amount);
+}
 
 /// Interval of reporting node state.
 const INFO_MESSAGE_INTERVAL: Duration = Duration::from_secs(25);
@@ -268,6 +274,28 @@ impl NodeState {
                     "Block added to canonical chain"
                 );
                 // TODO: (ms) add logic to update AML profiles here?
+                let mut aml_evaluator = AML_EVALUATOR
+                    .get()
+                    .expect("AML_EVALUATOR not initialized")
+                    .write()
+                    .expect("poisoned lock");
+
+                for tx in block.body().transactions() {
+                    let tx_recovered = tx.try_clone_into_recovered_unchecked().unwrap();
+                    println!("tx_recovered is {:?}", tx_recovered);
+                    // Check if this is a transfer(address,uint256)
+                    if tx_recovered.inner().input().len() < 4 || &tx_recovered.inner().input()[0..4] != &hex!("a9059cbb") {
+                        continue;
+                    }
+
+                    if let Ok(decoded) = transferCall::abi_decode(&tx_recovered.inner().input()) {
+                        let sender = tx_recovered.signer();
+                        let recipient = decoded.to;
+                        let amount = decoded.amount;
+
+                        aml_evaluator.update_profiles(sender, recipient, amount);
+                    }
+                }
 
             }
             BeaconConsensusEngineEvent::CanonicalChainCommitted(head, elapsed) => {

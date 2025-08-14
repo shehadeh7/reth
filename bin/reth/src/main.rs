@@ -3,12 +3,14 @@
 #[global_allocator]
 static ALLOC: reth_cli_util::allocator::Allocator = reth_cli_util::allocator::new_allocator();
 
+use std::sync::RwLock;
 use clap::Parser;
 use reth::{args::RessArgs, cli::Cli, ress::install_ress_subprotocol};
 use reth_ethereum_cli::chainspec::EthereumChainSpecParser;
 use reth_node_builder::NodeHandle;
 use reth_node_ethereum::EthereumNode;
 use tracing::info;
+use aml_engine::aml::{AmlEvaluator, AML_EVALUATOR};
 
 fn main() {
     reth_cli_util::sigsegv_handler::install();
@@ -20,12 +22,19 @@ fn main() {
 
     if let Err(err) =
         Cli::<EthereumChainSpecParser, RessArgs>::parse().run(async move |builder, ress_args| {
+            // TODO: (ms) move initialization to properly handle block history (initialize from block X onwards)
+            info!("launching aml evaluator");
+            AML_EVALUATOR
+                .set(RwLock::new(AmlEvaluator::new())) // or new(), or with config
+                .expect("AML_EVALUATOR already initialized");
+
             info!(target: "reth::cli", "Launching node");
             let NodeHandle { node, node_exit_future } =
                 builder.node(EthereumNode::default()).launch_with_debug_capabilities().await?;
 
             // Install ress subprotocol.
             if ress_args.enabled {
+                info!("ress is enabled");
                 install_ress_subprotocol(
                     ress_args,
                     node.provider,

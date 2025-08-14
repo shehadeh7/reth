@@ -15,7 +15,6 @@ use crate::tree::{
 use alloy_consensus::transaction::Either;
 use alloy_eips::{eip1898::BlockWithParent, NumHash};
 use alloy_evm::Evm;
-use alloy_evm::{block::BlockExecutor, Evm};
 use alloy_primitives::{hex, Address, B256, U256};
 use reth_chain_state::{
     CanonicalInMemoryState, ExecutedBlock, ExecutedBlockWithTrieUpdates, ExecutedTrieUpdates,
@@ -45,7 +44,9 @@ use reth_trie::{updates::TrieUpdates, HashedPostState, TrieInput};
 use reth_trie_db::{DatabaseHashedPostState, StateCommitment};
 use reth_trie_parallel::root::{ParallelStateRoot, ParallelStateRootError};
 use std::{collections::HashMap, sync::Arc, time::Instant};
+use alloy_consensus::Transaction;
 use tracing::{debug, error, info, trace, warn};
+use aml_engine::aml::{AML_EVALUATOR};
 use alloy_sol_types::{sol, SolCall};
 sol! {
     function transfer(address to, uint256 amount);
@@ -644,54 +645,54 @@ where
         }
 
         // TODO: (ms) Add the AML profile consensus rule check here
-        // let aml_evaluator = AML_EVALUATOR
-        //     .get()
-        //     .expect("AML_EVALUATOR not initialized")
-        //     .read()
-        //     .expect("poisoned lock");
-        //
-        // let txs: Vec<Tx> = transactions.into_iter().collect();
-        //
-        // // Collect AML-relevant tx info with their original indexes
-        // let aml_txs: Vec<(usize, Address, Address, U256)> = txs
-        //     .iter()
-        //     .enumerate()
-        //     .filter_map(|(idx, tx)| {
-        //         if tx.input().len() < 4 || &tx.input()[0..4] != &hex!("a9059cbb") {
-        //             return None;
-        //         }
-        //         let decoded = transferCall::abi_decode(&tx.input()).ok()?;
-        //         let sender = tx.sender();
-        //         let amount = decoded.amount;
-        //
-        //
-        //         Option::from((idx, sender, decoded.to, decoded.amount))
-        //     })
-        //     .collect();
-        //
-        // // Run AML batch check
-        // let aml_inputs = aml_txs.iter().map(|&(_, s, r, a)| (s, r, a)).collect::<Vec<_>>();
-        // let aml_results = aml_evaluator.check_compliance_batch(&aml_inputs);
-        //
-        // drop(aml_evaluator); // release lock ASAP
-        //
-        // // Map index to AML result for quick lookup
-        // let aml_map: std::collections::HashMap<usize, (bool, Option<&'static str>)> =
-        //     aml_txs.into_iter().zip(aml_results).map(|((idx, _, _, _,), res)| (idx, res)).collect();
-        //
-        // let mut provider = None;
-        // txs.into_iter()
-        //     .enumerate()
-        //     .map(|(idx, tx)| {
-        //         match aml_map.get(&idx) {
-        //             Some(&(false, _)) => TransactionValidationOutcome::Invalid(
-        //                 tx,
-        //                 InvalidPoolTransactionError::AMLRulesFailed,
-        //             ),
-        //             _ => self.validate_one_with_provider(origin, tx, &mut provider),
-        //         }
-        //     })
-        //     .collect()
+        let aml_evaluator = AML_EVALUATOR
+            .get()
+            .expect("AML_EVALUATOR not initialized")
+            .read()
+            .expect("poisoned lock");
+
+        let transactions = block.clone_transactions_recovered().collect::<Vec<_>>();
+        println!("transactions: {:?}", transactions);
+
+
+        // Collect AML-relevant tx info with their original indexes
+        let aml_txs: Vec<(usize, Address, Address, U256)> = transactions
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, tx)| {
+                if tx.inner().input().len() < 4 || &tx.inner().input()[0..4] != &hex!("a9059cbb") {
+                    return None;
+                }
+                let decoded = transferCall::abi_decode(&tx.input()).ok()?;
+                let sender = tx.signer();
+
+                Option::from((idx, sender, decoded.to, decoded.amount))
+            })
+            .collect();
+
+        // Run AML batch check
+        let aml_inputs = aml_txs.iter().map(|&(_, s, r, a)| (s, r, a)).collect::<Vec<_>>();
+        let aml_results = aml_evaluator.check_compliance_batch(&aml_inputs);
+
+        drop(aml_evaluator); // release lock ASAP
+
+
+        if aml_results.iter().any(|(compliant, _)| !compliant) {
+            for ((sender, recipient, amount), (compliant, reason)) in aml_inputs.iter().zip(aml_results.iter()) {
+                if !compliant {
+                    error!(
+                    target: "engine::tree",
+                    ?sender,
+                    ?recipient,
+                    ?amount,
+                    ?reason,
+                    block_hash=?block.hash(),
+                    "AML consensus rule failed"
+                );
+                }
+            }
+            return Err(ConsensusError::Other("AML consensus failed".to_string()));
+        }
 
         Ok(())
     }
