@@ -74,12 +74,14 @@ impl AccountProfile {
 #[derive(Debug, Clone)]
 pub struct AmlEvaluator {
     pub profiles: HashMap<Address, AccountProfile>,
+    pub last_seen_block_timestamp: u64,
 }
 
 impl AmlEvaluator {
     pub fn new() -> Self {
         Self {
             profiles: HashMap::new(),
+            last_seen_block_timestamp: 0, // store latest when updating , figure out initialization later
         }
     }
 
@@ -165,6 +167,8 @@ impl AmlEvaluator {
                 let mut recipient_profile = temp_profiles
                     .remove(&recipient)
                     .unwrap_or_else(|| AccountProfile::new(recipient));
+
+                println!("sender_profile: {:?}, recipient_profile: {:?}", sender_profile, recipient_profile);
 
                 let reason = Self::check_compliance_internal(
                     &sender_profile,

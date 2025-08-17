@@ -764,6 +764,7 @@ where
 
         let txs: Vec<(TransactionOrigin, Tx)> = transactions.into_iter().collect();
 
+        // TODO: use a separate validate_one_with_provider for batch to avoid redundant AML checks
         // Collect AML-relevant tx info with their original indexes
         let aml_txs: Vec<(usize, Address, Address, U256)> = txs
             .iter()
@@ -822,6 +823,7 @@ where
 
         let txs: Vec<Tx> = transactions.into_iter().collect();
 
+        // TODO: use a separate validate_one_with_provider for batch to avoid redundant AML checks
         // Collect AML-relevant tx info with their original indexes
         let aml_txs: Vec<(usize, Address, Address, U256)> = txs
             .iter()

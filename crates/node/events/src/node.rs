@@ -297,6 +297,8 @@ impl NodeState {
                     }
                 }
 
+                // Always update the latest seen block timestamp
+                aml_evaluator.last_seen_block_timestamp = block.timestamp();
             }
             BeaconConsensusEngineEvent::CanonicalChainCommitted(head, elapsed) => {
                 self.latest_block = Some(head.number());
