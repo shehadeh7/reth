@@ -697,10 +697,10 @@ where
             }
         }
 
-        let aml_evaluator = AML_EVALUATOR
+        let mut aml_evaluator = AML_EVALUATOR
             .get()
             .expect("AML_EVALUATOR not initialized")
-            .read()
+            .write()
             .expect("poisoned lock");
 
         // TODO: (ms) add single transaction check back here. Move the code into fn for checking
@@ -710,21 +710,16 @@ where
                 let recipient = decoded.to;
                 let amount = decoded.amount;
 
-                println!("amount is {:?}", amount);
+                let (status, reason) = aml_evaluator.check_mempool_tx(sender, recipient, amount);
 
-                let aml_input = vec![(sender, recipient, amount)];
-                let aml_result = aml_evaluator.check_compliance_batch(&aml_input);
-
-                if let Some((ok, reason)) = aml_result.first() {
-                    if !ok {
-                        print!("Blocked by AML: {:?}", reason);
-                        return TransactionValidationOutcome::Invalid(
-                            transaction,
-                            InvalidPoolTransactionError::AMLRulesFailed);
-                        // return or reject transaction here
-                    } else {
-                        println!("AML passed ✅");
-                    }
+                if !status {
+                    print!("Blocked by AML: {:?}", reason);
+                    return TransactionValidationOutcome::Invalid(
+                        transaction,
+                        InvalidPoolTransactionError::AMLRulesFailed);
+                    // return or reject transaction here
+                } else {
+                    println!("AML passed ✅");
                 }
             }
         }
@@ -755,57 +750,11 @@ where
         &self,
         transactions: Vec<(TransactionOrigin, Tx)>,
     ) -> Vec<TransactionValidationOutcome<Tx>> {
-        println!("hello from validate batch");
-        let aml_evaluator = AML_EVALUATOR
-            .get()
-            .expect("AML_EVALUATOR not initialized")
-            .read()
-            .expect("poisoned lock");
-
-        let txs: Vec<(TransactionOrigin, Tx)> = transactions.into_iter().collect();
-
-        // TODO: use a separate validate_one_with_provider for batch to avoid redundant AML checks
-        // Collect AML-relevant tx info with their original indexes
-        let aml_txs: Vec<(usize, Address, Address, U256)> = txs
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, (_, tx))| {
-                if tx.input().len() < 4 || &tx.input()[0..4] != &hex!("a9059cbb") {
-                    return None;
-                }
-                let decoded = transferCall::abi_decode(&tx.input()).ok()?;
-                let sender = tx.sender();
-                let amount = decoded.amount;
-
-
-                Option::from((idx, sender, decoded.to, decoded.amount))
-            })
-            .collect();
-
-        // Run AML batch check
-        let aml_inputs = aml_txs.iter().map(|&(_, s, r, a)| (s, r, a)).collect::<Vec<_>>();
-        let aml_results = aml_evaluator.check_compliance_batch(&aml_inputs);
-
-        drop(aml_evaluator); // release lock ASAP
-
-        // Map index to AML result for quick lookup
-        let aml_map: std::collections::HashMap<usize, (bool, Option<&'static str>)> =
-            aml_txs.into_iter().zip(aml_results).map(|((idx, _, _, _,), res)| (idx, res)).collect();
-
         let mut provider = None;
-        txs.into_iter()
-            .enumerate()
-            .map(|(idx, (origin, tx))| {
-                match aml_map.get(&idx) {
-                    Some(&(false, _)) => TransactionValidationOutcome::Invalid(
-                        tx,
-                        InvalidPoolTransactionError::AMLRulesFailed,
-                    ),
-                    _ => self.validate_one_with_provider(origin, tx, &mut provider),
-                }
-            })
+        transactions
+            .into_iter()
+            .map(|(origin, tx)| self.validate_one_with_provider(origin, tx, &mut provider))
             .collect()
-
     }
 
     /// Validates all given transactions with origin.
@@ -814,55 +763,10 @@ where
         origin: TransactionOrigin,
         transactions: impl IntoIterator<Item = Tx> + Send,
     ) -> Vec<TransactionValidationOutcome<Tx>> {
-        println!("hello from validate batch with origin");
-        let aml_evaluator = AML_EVALUATOR
-            .get()
-            .expect("AML_EVALUATOR not initialized")
-            .read()
-            .expect("poisoned lock");
-
-        let txs: Vec<Tx> = transactions.into_iter().collect();
-
-        // TODO: use a separate validate_one_with_provider for batch to avoid redundant AML checks
-        // Collect AML-relevant tx info with their original indexes
-        let aml_txs: Vec<(usize, Address, Address, U256)> = txs
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, tx)| {
-                if tx.input().len() < 4 || &tx.input()[0..4] != &hex!("a9059cbb") {
-                    return None;
-                }
-                let decoded = transferCall::abi_decode(&tx.input()).ok()?;
-                let sender = tx.sender();
-                let amount = decoded.amount;
-
-
-                Option::from((idx, sender, decoded.to, decoded.amount))
-            })
-            .collect();
-
-        // Run AML batch check
-        let aml_inputs = aml_txs.iter().map(|&(_, s, r, a)| (s, r, a)).collect::<Vec<_>>();
-        let aml_results = aml_evaluator.check_compliance_batch(&aml_inputs);
-
-        drop(aml_evaluator); // release lock ASAP
-
-        // Map index to AML result for quick lookup
-        let aml_map: std::collections::HashMap<usize, (bool, Option<&'static str>)> =
-            aml_txs.into_iter().zip(aml_results).map(|((idx, _, _, _,), res)| (idx, res)).collect();
-
         let mut provider = None;
-        txs.into_iter()
-            .enumerate()
-            .map(|(idx, tx)| {
-                match aml_map.get(&idx) {
-                    Some(&(false, _)) => TransactionValidationOutcome::Invalid(
-                        tx,
-                        InvalidPoolTransactionError::AMLRulesFailed,
-                    ),
-                    _ => self.validate_one_with_provider(origin, tx, &mut provider),
-                }
-            })
+        transactions
+            .into_iter()
+            .map(|tx| self.validate_one_with_provider(origin, tx, &mut provider))
             .collect()
     }
 
@@ -893,6 +797,14 @@ where
         }
 
         self.block_gas_limit.store(new_tip_block.gas_limit(), std::sync::atomic::Ordering::Relaxed);
+
+        // Clear pending profiles once block is added
+        let mut aml_evaluator = AML_EVALUATOR
+            .get()
+            .expect("AML_EVALUATOR not initialized")
+            .write()
+            .expect("poisoned lock");
+        aml_evaluator.pending_profiles.clear();
     }
 
     fn max_gas_limit(&self) -> u64 {

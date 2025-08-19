@@ -282,7 +282,6 @@ impl NodeState {
 
                 for tx in block.body().transactions() {
                     let tx_recovered = tx.try_clone_into_recovered_unchecked().unwrap();
-                    println!("tx_recovered is {:?}", tx_recovered);
                     // Check if this is a transfer(address,uint256)
                     if tx_recovered.inner().input().len() < 4 || &tx_recovered.inner().input()[0..4] != &hex!("a9059cbb") {
                         continue;

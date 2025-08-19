@@ -652,8 +652,6 @@ where
             .expect("poisoned lock");
 
         let transactions = block.clone_transactions_recovered().collect::<Vec<_>>();
-        println!("transactions: {:?}", transactions);
-
 
         // Collect AML-relevant tx info with their original indexes
         let aml_txs: Vec<(usize, Address, Address, U256)> = transactions
@@ -688,7 +686,7 @@ where
                     ?reason,
                     block_hash=?block.hash(),
                     "AML consensus rule failed"
-                );
+                    );
                 }
             }
             return Err(ConsensusError::Other("AML consensus failed".to_string()));

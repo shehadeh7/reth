@@ -74,6 +74,7 @@ impl AccountProfile {
 #[derive(Debug, Clone)]
 pub struct AmlEvaluator {
     pub profiles: HashMap<Address, AccountProfile>,
+    pub pending_profiles: HashMap<Address, AccountProfile>,
     pub last_seen_block_timestamp: u64,
 }
 
@@ -81,6 +82,7 @@ impl AmlEvaluator {
     pub fn new() -> Self {
         Self {
             profiles: HashMap::new(),
+            pending_profiles: HashMap::new(),
             last_seen_block_timestamp: 0, // store latest when updating , figure out initialization later
         }
     }
@@ -128,6 +130,65 @@ impl AmlEvaluator {
         profile.recv_amounts.push_back(amount);
     }
 
+    pub fn check_mempool_tx(
+        &mut self,
+        sender: Address,
+        recipient: Address,
+        amount: U256,
+    ) -> (bool, Option<&'static str>) {
+        if self.pending_profiles.is_empty() {
+            self.pending_profiles = self.profiles.clone();
+        }
+
+        let amount = match amount.try_into() {
+            Ok(v) => v,
+            Err(_) => return (false, Some("amount_conversion_failed")),
+        };
+
+        if sender == recipient {
+            let profile = self.pending_profiles
+                .entry(sender)
+                .or_insert_with(|| AccountProfile::new(sender));
+
+            let reason = Self::check_compliance_internal(profile, profile, amount, true);
+
+            if let Some(reason) = reason {
+                (false, Some(reason))
+            } else {
+                Self::update_sender_profile(profile, amount);
+                Self::update_recipient_profile(profile, amount);
+                (true, None)
+            }
+        } else {
+            let mut sender_profile = self.pending_profiles
+                .remove(&sender)
+                .unwrap_or_else(|| AccountProfile::new(sender));
+            let mut recipient_profile = self.pending_profiles
+                .remove(&recipient)
+                .unwrap_or_else(|| AccountProfile::new(recipient));
+
+            let reason = Self::check_compliance_internal(
+                &sender_profile,
+                &recipient_profile,
+                amount,
+                false,
+            );
+
+            if let Some(reason) = reason {
+                // Don't update profiles, just reinsert the originals
+                self.pending_profiles.insert(sender, sender_profile);
+                self.pending_profiles.insert(recipient, recipient_profile);
+                (false, Some(reason))
+            } else {
+                Self::update_sender_profile(&mut sender_profile, amount);
+                Self::update_recipient_profile(&mut recipient_profile, amount);
+                self.pending_profiles.insert(sender, sender_profile);
+                self.pending_profiles.insert(recipient, recipient_profile);
+                (true, None)
+            }
+        }
+    }
+
     pub fn check_compliance_batch(
         &self,
         transactions: &[(Address, Address, U256)],
@@ -136,7 +197,7 @@ impl AmlEvaluator {
         let mut results = Vec::with_capacity(transactions.len());
 
         for &(sender, recipient, amount) in transactions {
-            let amount_u128 = match amount.try_into() {
+            let amount = match amount.try_into() {
                 Ok(v) => v,
                 Err(_) => {
                     results.push((false, Some("amount_conversion_failed")));
@@ -173,15 +234,15 @@ impl AmlEvaluator {
                 let reason = Self::check_compliance_internal(
                     &sender_profile,
                     &recipient_profile,
-                    amount_u128,
+                    amount,
                     false,
                 );
 
                 if let Some(reason) = reason {
                     results.push((false, Some(reason)));
                 } else {
-                    Self::update_sender_profile(&mut sender_profile, amount_u128);
-                    Self::update_recipient_profile(&mut recipient_profile, amount_u128);
+                    Self::update_sender_profile(&mut sender_profile, amount);
+                    Self::update_recipient_profile(&mut recipient_profile, amount);
                     results.push((true, None));
                 }
 
