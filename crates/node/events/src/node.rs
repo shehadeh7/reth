@@ -2,7 +2,7 @@
 
 use crate::cl::ConsensusLayerHealthEvent;
 use alloy_consensus::{constants::GWEI_TO_WEI, BlockHeader, Transaction};
-use alloy_primitives::{hex, BlockNumber, B256};
+use alloy_primitives::{hex, BlockNumber, Selector, B256};
 use alloy_rpc_types_engine::ForkchoiceState;
 use futures::Stream;
 use reth_engine_primitives::{
@@ -283,7 +283,7 @@ impl NodeState {
                 for tx in block.body().transactions() {
                     let tx_recovered = tx.try_clone_into_recovered_unchecked().unwrap();
                     // Check if this is a transfer(address,uint256)
-                    if tx_recovered.inner().input().len() < 4 || &tx_recovered.inner().input()[0..4] != &hex!("a9059cbb") {
+                    if tx_recovered.inner().function_selector() == Some(&Selector::from(hex!("a9059cbb"))) {
                         continue;
                     }
 

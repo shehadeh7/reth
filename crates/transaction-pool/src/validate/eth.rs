@@ -39,7 +39,7 @@ use std::{
     time::Instant,
 };
 use std::str::FromStr;
-use alloy_primitives::{hex, Address, U256};
+use alloy_primitives::{hex, Selector, U256};
 use tokio::sync::Mutex;
 use aml_engine::aml::{AML_EVALUATOR};
 use alloy_sol_types::{sol, SolCall};
@@ -703,8 +703,9 @@ where
             .write()
             .expect("poisoned lock");
 
+        // TODO: (ms) ensure that if a transaction nonce is the same as one that already exists, dont modify the profile?
         // TODO: (ms) add single transaction check back here. Move the code into fn for checking
-        if transaction.input().len() >= 4 && &transaction.input()[0..4] == &hex!("a9059cbb") {
+        if transaction.function_selector() == Some(&Selector::from(hex!("a9059cbb"))) {
             if let Ok(decoded) = transferCall::abi_decode(&transaction.input()) {
                 let sender = transaction.sender();
                 let recipient = decoded.to;
@@ -717,7 +718,6 @@ where
                     return TransactionValidationOutcome::Invalid(
                         transaction,
                         InvalidPoolTransactionError::AMLRulesFailed);
-                    // return or reject transaction here
                 } else {
                     println!("AML passed ✅");
                 }

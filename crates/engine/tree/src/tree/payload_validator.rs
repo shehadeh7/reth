@@ -15,7 +15,7 @@ use crate::tree::{
 use alloy_consensus::transaction::Either;
 use alloy_eips::{eip1898::BlockWithParent, NumHash};
 use alloy_evm::Evm;
-use alloy_primitives::{hex, Address, B256, U256};
+use alloy_primitives::{hex, Address, Selector, B256, U256};
 use reth_chain_state::{
     CanonicalInMemoryState, ExecutedBlock, ExecutedBlockWithTrieUpdates, ExecutedTrieUpdates,
 };
@@ -658,9 +658,11 @@ where
             .iter()
             .enumerate()
             .filter_map(|(idx, tx)| {
-                if tx.inner().input().len() < 4 || &tx.inner().input()[0..4] != &hex!("a9059cbb") {
+                if tx.inner().function_selector() == Some(&Selector::from(hex!("a9059cbb"))) {
                     return None;
                 }
+                // check if it has a particular function
+                // check abi of contract and if it has a particular view function declared or interface
                 let decoded = transferCall::abi_decode(&tx.input()).ok()?;
                 let sender = tx.signer();
 
