@@ -189,6 +189,23 @@ impl AmlEvaluator {
         }
     }
 
+    /// Method to revert a single pending transaction from pending profiles
+    pub fn revert_mempool_tx(&mut self, sender: Address, recipient: Address, amount: U256) {
+        if sender == recipient {
+            if let Some(profile) = self.pending_profiles.get_mut(&sender) {
+                profile.total_sent = profile.total_sent.saturating_sub(amount);
+                profile.total_received = profile.total_received.saturating_sub(amount);
+            }
+        } else {
+            if let Some(sender_profile) = self.pending_profiles.get_mut(&sender) {
+                sender_profile.total_sent = sender_profile.total_sent.saturating_sub(amount);
+            }
+            if let Some(recipient_profile) = self.pending_profiles.get_mut(&recipient) {
+                recipient_profile.total_received = recipient_profile.total_received.saturating_sub(amount);
+            }
+        }
+    }
+
     pub fn check_compliance_batch(
         &self,
         transactions: &[(Address, Address, U256)],

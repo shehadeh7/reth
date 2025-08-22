@@ -39,13 +39,8 @@ use std::{
     time::Instant,
 };
 use std::str::FromStr;
-use alloy_primitives::{hex, Selector, U256};
 use tokio::sync::Mutex;
 use aml_engine::aml::{AML_EVALUATOR};
-use alloy_sol_types::{sol, SolCall};
-sol! {
-    function transfer(address to, uint256 amount);
-}
 
 /// Validator for Ethereum transactions.
 /// It is a [`TransactionValidator`] implementation that validates ethereum transaction.
@@ -693,33 +688,6 @@ where
                     self.validation_metrics.blob_validation_duration.record(now.elapsed());
                     // store the extracted blob
                     maybe_blob_sidecar = Some(sidecar);
-                }
-            }
-        }
-
-        let mut aml_evaluator = AML_EVALUATOR
-            .get()
-            .expect("AML_EVALUATOR not initialized")
-            .write()
-            .expect("poisoned lock");
-
-        // TODO: (ms) ensure that if a transaction nonce is the same as one that already exists, dont modify the profile?
-        // TODO: (ms) add single transaction check back here. Move the code into fn for checking
-        if transaction.function_selector() == Some(&Selector::from(hex!("a9059cbb"))) {
-            if let Ok(decoded) = transferCall::abi_decode(&transaction.input()) {
-                let sender = transaction.sender();
-                let recipient = decoded.to;
-                let amount = decoded.amount;
-
-                let (status, reason) = aml_evaluator.check_mempool_tx(sender, recipient, amount);
-
-                if !status {
-                    print!("Blocked by AML: {:?}", reason);
-                    return TransactionValidationOutcome::Invalid(
-                        transaction,
-                        InvalidPoolTransactionError::AMLRulesFailed);
-                } else {
-                    println!("AML passed ✅");
                 }
             }
         }

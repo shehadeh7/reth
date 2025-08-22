@@ -1,26 +1,17 @@
 //! The internal transaction pool implementation.
 
-use crate::{
-    config::{LocalTransactionConfig, TXPOOL_MAX_ACCOUNT_SLOTS_PER_SENDER},
-    error::{
-        Eip4844PoolTransactionError, Eip7702PoolTransactionError, InvalidPoolTransactionError,
-        PoolError, PoolErrorKind,
-    },
-    identifier::{SenderId, TransactionId},
-    metrics::{AllTransactionsMetrics, TxPoolMetrics},
-    pool::{
-        best::BestTransactions,
-        blob::BlobTransactions,
-        parked::{BasefeeOrd, ParkedPool, QueuedOrd},
-        pending::PendingPool,
-        state::{SubPool, TxState},
-        update::{Destination, PoolUpdate, UpdateOutcome},
-        AddedPendingTransaction, AddedTransaction, OnNewCanonicalStateOutcome,
-    },
-    traits::{BestTransactionsAttributes, BlockInfo, PoolSize},
-    PoolConfig, PoolResult, PoolTransaction, PoolUpdateKind, PriceBumpConfig, TransactionOrdering,
-    ValidPoolTransaction, U256,
-};
+use crate::{config::{LocalTransactionConfig, TXPOOL_MAX_ACCOUNT_SLOTS_PER_SENDER}, error::{
+    Eip4844PoolTransactionError, Eip7702PoolTransactionError, InvalidPoolTransactionError,
+    PoolError, PoolErrorKind,
+}, identifier::{SenderId, TransactionId}, metrics::{AllTransactionsMetrics, TxPoolMetrics}, pool::{
+    best::BestTransactions,
+    blob::BlobTransactions,
+    parked::{BasefeeOrd, ParkedPool, QueuedOrd},
+    pending::PendingPool,
+    state::{SubPool, TxState},
+    update::{Destination, PoolUpdate, UpdateOutcome},
+    AddedPendingTransaction, AddedTransaction, OnNewCanonicalStateOutcome,
+}, traits::{BestTransactionsAttributes, BlockInfo, PoolSize}, PoolConfig, PoolResult, PoolTransaction, PoolUpdateKind, PriceBumpConfig, TransactionOrdering, TransactionValidationOutcome, ValidPoolTransaction, U256};
 use alloy_consensus::constants::{
     EIP1559_TX_TYPE_ID, EIP2930_TX_TYPE_ID, EIP4844_TX_TYPE_ID, EIP7702_TX_TYPE_ID, KECCAK_EMPTY,
     LEGACY_TX_TYPE_ID,
@@ -30,7 +21,7 @@ use alloy_eips::{
     eip4844::BLOB_TX_MIN_BLOB_GASPRICE,
     Typed2718,
 };
-use alloy_primitives::{Address, TxHash, B256};
+use alloy_primitives::{hex, Address, Selector, TxHash, B256};
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 use std::{
@@ -41,6 +32,11 @@ use std::{
     sync::Arc,
 };
 use tracing::trace;
+use aml_engine::aml::AML_EVALUATOR;
+use alloy_sol_types::{sol, SolCall};
+sol! {
+    function transfer(address to, uint256 amount);
+}
 
 #[cfg_attr(doc, aquamarine::aquamarine)]
 // TODO: Inlined diagram due to a bug in aquamarine library, should become an include when it's
@@ -753,6 +749,10 @@ impl<T: TransactionOrdering> TxPool<T> {
                             transaction.tx_type(),
                         ),
                     )),
+                    InsertErr::AMLRulesFailed { transaction} => Err(PoolError::new(
+                        *transaction.hash(),
+                        PoolErrorKind::InvalidTransaction(InvalidPoolTransactionError::AMLRulesFailed),
+                    ))
                 }
             }
         }
@@ -1879,10 +1879,40 @@ impl<T: PoolTransaction> AllTransactions<T> {
             cumulative_cost,
         };
 
+        let mut aml_evaluator = AML_EVALUATOR
+            .get()
+            .expect("AML_EVALUATOR not initialized")
+            .write()
+            .expect("poisoned lock");
+
+        // TODO: (ms) ensure that if a transaction nonce is the same as one that already exists, dont modify the profile?
+        // TODO: (ms) add single transaction check back here. Move the code into fn for checking
+
+
         // try to insert the transaction
         match self.txs.entry(*transaction.id()) {
             Entry::Vacant(entry) => {
                 // Insert the transaction in both maps
+                // TODO: (ms) handle updating AML profile here
+                // if not compliant, return some new insert error
+                if transaction.transaction.function_selector() == Some(&Selector::from(hex!("a9059cbb"))) {
+                    if let Ok(decoded) = transferCall::abi_decode(&transaction.transaction.input()) {
+                        let sender = transaction.sender();
+                        let recipient = decoded.to;
+                        let amount = decoded.amount;
+
+                        let (status, reason) = aml_evaluator.check_mempool_tx(sender, recipient, amount);
+
+                        if !status {
+                            print!("Blocked by AML: {:?}", reason);
+                            return Err(InsertErr::AMLRulesFailed {
+                                transaction: pool_tx.transaction,
+                            });
+                        } else {
+                            println!("AML passed ✅");
+                        }
+                    }
+                }
                 self.by_hash.insert(*pool_tx.transaction.hash(), pool_tx.transaction.clone());
                 entry.insert(pool_tx);
             }
@@ -1898,6 +1928,44 @@ impl<T: PoolTransaction> AllTransactions<T> {
                         existing: *entry.get().transaction.hash(),
                     })
                 }
+
+                // Revert prior ERC20 tx
+                if existing_transaction.transaction.function_selector() == Some(&Selector::from(hex!("a9059cbb"))) {
+                    if let Ok(decoded) = transferCall::abi_decode(&existing_transaction.transaction.input()) {
+                        aml_evaluator.revert_mempool_tx(
+                            existing_transaction.transaction.sender(),
+                            decoded.to,
+                            decoded.amount,
+                        );
+                    }
+                }
+
+                // Check if incoming replacement transaction is an ERC20 transaction
+                let is_transfer = transaction.transaction.function_selector() == Some(&Selector::from(hex!("a9059cbb")));
+                if is_transfer {
+                    if let Ok(decoded) = transferCall::abi_decode(&transaction.transaction.input()) {
+                        let sender = transaction.sender();
+                        let recipient = decoded.to;
+                        let amount = decoded.amount;
+
+                        let (status, reason) = aml_evaluator.check_mempool_tx(sender, recipient, amount);
+                        if !status {
+                            // Reinstate the old tx and profiles
+                            if let Ok(old_decoded) = transferCall::abi_decode(&existing_transaction.transaction.input()) {
+                                aml_evaluator.check_mempool_tx(
+                                    existing_transaction.transaction.sender(),
+                                    old_decoded.to,
+                                    old_decoded.amount,
+                                );
+                            }
+
+                            return Err(InsertErr::AMLRulesFailed {
+                                transaction: pool_tx.transaction,
+                            });
+                        }
+                    }
+                }
+
                 let new_hash = *pool_tx.transaction.hash();
                 let new_transaction = pool_tx.transaction.clone();
                 let replaced = entry.insert(pool_tx);
@@ -2091,6 +2159,8 @@ pub(crate) enum InsertErr<T: PoolTransaction> {
     },
     /// Thrown if the mutual exclusivity constraint (blob vs normal transaction) is violated.
     TxTypeConflict { transaction: Arc<ValidPoolTransaction<T>> },
+    /// (ms) Custom transaction insertion error
+    AMLRulesFailed { transaction: Arc<ValidPoolTransaction<T>> },
 }
 
 /// Transaction was successfully inserted into the pool

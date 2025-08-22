@@ -1867,6 +1867,8 @@ where
         let tip = chain_update.tip().clone_sealed_header();
         let notification = chain_update.to_chain_notification();
 
+        // TODO: (ms) check if we can add the change here for AML profile reversion?
+        // TODO: test out the exact events being emitted during a reorg
         // reinsert any missing reorged blocks
         if let NewCanonicalChain::Reorg { new, old } = &chain_update {
             let new_first = new.first().map(|first| first.recovered_block().num_hash());
