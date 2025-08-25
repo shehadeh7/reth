@@ -1,7 +1,7 @@
 //! Support for handling events emitted by node components.
 
 use crate::cl::ConsensusLayerHealthEvent;
-use alloy_consensus::{constants::GWEI_TO_WEI, BlockHeader, Transaction};
+use alloy_consensus::{constants::GWEI_TO_WEI, BlockHeader, Transaction, TxReceipt};
 use alloy_primitives::{hex, BlockNumber, Selector, B256};
 use alloy_rpc_types_engine::ForkchoiceState;
 use futures::Stream;
@@ -274,30 +274,38 @@ impl NodeState {
                     "Block added to canonical chain"
                 );
                 // TODO: (ms) add logic to update AML profiles here?
+                // check receipts from executed block receipt to figure out transactions that run
                 let mut aml_evaluator = AML_EVALUATOR
                     .get()
                     .expect("AML_EVALUATOR not initialized")
                     .write()
                     .expect("poisoned lock");
 
-                for tx in block.body().transactions() {
-                    let tx_recovered = tx.try_clone_into_recovered_unchecked().unwrap();
-                    // Check if this is a transfer(address,uint256)
-                    if tx_recovered.inner().function_selector() == Some(&Selector::from(hex!("a9059cbb"))) {
-                        continue;
-                    }
+                if let Some(receipts) = executed.execution_output.receipts.get(0) {
+                    for (tx, receipt) in block.body().transactions().iter().zip(receipts) {
+                        if !receipt.status() {
+                            continue;
+                        }
 
-                    if let Ok(decoded) = transferCall::abi_decode(&tx_recovered.inner().input()) {
-                        let sender = tx_recovered.signer();
-                        let recipient = decoded.to;
-                        let amount = decoded.amount;
+                        let tx_recovered = tx.try_clone_into_recovered_unchecked().unwrap();
+                        // Check if this is a transfer(address,uint256)
+                        if tx_recovered.inner().function_selector() == Some(&Selector::from(hex!("a9059cbb"))) {
+                            continue;
+                        }
 
-                        aml_evaluator.update_profiles(sender, recipient, amount);
+                        if let Ok(decoded) = transferCall::abi_decode(&tx_recovered.inner().input()) {
+                            let sender = tx_recovered.signer();
+                            let recipient = decoded.to;
+                            let amount = decoded.amount;
+
+                            aml_evaluator.update_profiles(sender, recipient, amount);
+                        }
                     }
                 }
 
                 // Always update the latest seen block timestamp
                 aml_evaluator.last_seen_block_timestamp = block.timestamp();
+                aml_evaluator.last_seen_block_number = block.number();
             }
             BeaconConsensusEngineEvent::CanonicalChainCommitted(head, elapsed) => {
                 self.latest_block = Some(head.number());

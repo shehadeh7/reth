@@ -76,6 +76,7 @@ pub struct AmlEvaluator {
     pub profiles: HashMap<Address, AccountProfile>,
     pub pending_profiles: HashMap<Address, AccountProfile>,
     pub last_seen_block_timestamp: u64,
+    pub last_seen_block_number: u64,
 }
 
 impl AmlEvaluator {
@@ -84,6 +85,7 @@ impl AmlEvaluator {
             profiles: HashMap::new(),
             pending_profiles: HashMap::new(),
             last_seen_block_timestamp: 0, // store latest when updating , figure out initialization later
+            last_seen_block_number: 0,
         }
     }
 
