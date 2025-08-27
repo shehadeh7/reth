@@ -74,7 +74,7 @@ impl AccountProfile {
 #[derive(Debug)]
 pub struct AmlEvaluator {
     profiles: HashMap<Address, AccountProfile>,
-    pending_profiles: HashMap<Address, AccountProfile>,
+    pub pending_profiles: HashMap<Address, AccountProfile>,
 }
 
 impl AmlEvaluator {
