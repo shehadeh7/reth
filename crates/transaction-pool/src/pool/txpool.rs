@@ -1887,7 +1887,7 @@ impl<T: PoolTransaction> AllTransactions<T> {
 
         // TODO: (ms) ensure that if a transaction nonce is the same as one that already exists, dont modify the profile?
         // TODO: (ms) add single transaction check back here. Move the code into fn for checking
-
+        let upcoming_block_number = self.last_seen_block_number + 1;
 
         // try to insert the transaction
         match self.txs.entry(*transaction.id()) {
@@ -1895,13 +1895,14 @@ impl<T: PoolTransaction> AllTransactions<T> {
                 // Insert the transaction in both maps
                 // TODO: (ms) handle updating AML profile here
                 // if not compliant, return some new insert error
+                // to is the contract address
                 if transaction.transaction.function_selector() == Some(&Selector::from(hex!("a9059cbb"))) {
                     if let Ok(decoded) = transferCall::abi_decode(&transaction.transaction.input()) {
                         let sender = transaction.sender();
                         let recipient = decoded.to;
                         let amount = decoded.amount;
 
-                        let (status, reason) = aml_evaluator.check_mempool_tx(sender, recipient, amount);
+                        let (status, reason) = aml_evaluator.check_mempool_tx(sender, recipient, amount, upcoming_block_number);
 
                         if !status {
                             print!("Blocked by AML: {:?}", reason);
@@ -1948,7 +1949,8 @@ impl<T: PoolTransaction> AllTransactions<T> {
                         let recipient = decoded.to;
                         let amount = decoded.amount;
 
-                        let (status, reason) = aml_evaluator.check_mempool_tx(sender, recipient, amount);
+
+                        let (status, reason) = aml_evaluator.check_mempool_tx(sender, recipient, amount, upcoming_block_number);
                         if !status {
                             // Reinstate the old tx and profiles
                             if let Ok(old_decoded) = transferCall::abi_decode(&existing_transaction.transaction.input()) {
@@ -1956,6 +1958,7 @@ impl<T: PoolTransaction> AllTransactions<T> {
                                     existing_transaction.transaction.sender(),
                                     old_decoded.to,
                                     old_decoded.amount,
+                                    upcoming_block_number,
                                 );
                             }
 

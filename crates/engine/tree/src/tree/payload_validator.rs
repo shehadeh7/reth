@@ -652,7 +652,7 @@ where
             .expect("poisoned lock");
 
         let transactions = block.clone_transactions_recovered().collect::<Vec<_>>();
-
+        // TODO: (ms) if transaction didn't execute successfully, dont update the AML profile
         // Collect AML-relevant tx info with their original indexes
         let aml_txs: Vec<(usize, Address, Address, U256)> = transactions
             .iter()
@@ -672,7 +672,7 @@ where
 
         // Run AML batch check
         let aml_inputs = aml_txs.iter().map(|&(_, s, r, a)| (s, r, a)).collect::<Vec<_>>();
-        let aml_results = aml_evaluator.check_compliance_batch(&aml_inputs);
+        let aml_results = aml_evaluator.check_compliance_batch(&aml_inputs, block.number());
 
         drop(aml_evaluator); // release lock ASAP
 

@@ -298,14 +298,10 @@ impl NodeState {
                             let recipient = decoded.to;
                             let amount = decoded.amount;
 
-                            aml_evaluator.update_profiles(sender, recipient, amount);
+                            aml_evaluator.update_profiles(sender, recipient, amount, block.number());
                         }
                     }
                 }
-
-                // Always update the latest seen block timestamp
-                aml_evaluator.last_seen_block_timestamp = block.timestamp();
-                aml_evaluator.last_seen_block_number = block.number();
             }
             BeaconConsensusEngineEvent::CanonicalChainCommitted(head, elapsed) => {
                 self.latest_block = Some(head.number());
