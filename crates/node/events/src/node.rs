@@ -282,14 +282,17 @@ impl NodeState {
                     .expect("poisoned lock");
 
                 if let Some(receipts) = executed.execution_output.receipts.get(0) {
+                    let mut updates = Vec::new();
+
                     for (tx, receipt) in block.body().transactions().iter().zip(receipts) {
                         if !receipt.status() {
                             continue;
                         }
 
                         let tx_recovered = tx.try_clone_into_recovered_unchecked().unwrap();
-                        // Check if this is a transfer(address,uint256)
-                        if tx_recovered.inner().function_selector() == Some(&Selector::from(hex!("a9059cbb"))) {
+
+                        // skip non-transfer
+                        if tx_recovered.inner().function_selector() != Some(&Selector::from(hex!("a9059cbb"))) {
                             continue;
                         }
 
@@ -298,9 +301,12 @@ impl NodeState {
                             let recipient = decoded.to;
                             let amount = decoded.amount;
 
-                            aml_evaluator.update_profiles(sender, recipient, amount, block.number());
+                            updates.push((sender, recipient, amount));
                         }
                     }
+
+                    // Batch update all profiles at once
+                    aml_evaluator.update_profiles_batch(&updates, block.number());
                 }
             }
             BeaconConsensusEngineEvent::CanonicalChainCommitted(head, elapsed) => {

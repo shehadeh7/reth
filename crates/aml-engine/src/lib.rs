@@ -1,2 +1,3 @@
 pub mod aml;
-mod aml_db;
+pub mod aml_db;
+mod account_profile;
