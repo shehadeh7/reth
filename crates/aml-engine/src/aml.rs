@@ -4,6 +4,8 @@ use std::collections::HashMap;
 use std::sync::{OnceLock, RwLock};
 use crate::aml_db::{AccountProfileDb, AmlDb};
 
+const BLOCK_WINDOW: u64 = 300; // 300 blocks =~ 1 hour
+
 // 100 * 1e18 = 100000000000000000000
 pub const MAX_SINGLE_TX_AMOUNT: U256 = U256::from_limbs([
     0x6BC75E2D63100000, // Limb 0 (LSB)
@@ -44,6 +46,7 @@ impl AmlEvaluator {
         sender_profile: &AccountProfile,
         recipient_profile: &AccountProfile,
         amount: U256,
+        current_block: u64,
     ) -> Option<&'static str> {
         if amount > MAX_SINGLE_TX_AMOUNT {
             return Some("single_transaction_above_threshold");
@@ -57,23 +60,64 @@ impl AmlEvaluator {
             return Some("total_received_7d_threshold_exceeded");
         }
 
+        if let Some(flag) = Self::detect_fast_in_fast_out(sender_profile, amount, current_block) {
+            return Some(flag);
+        }
+
         None
     }
 
-    fn get_profile(&self, addr: Address) -> AccountProfile {
-        self.db.load_profile(&addr)
-            .map(|db_prof| AccountProfile::from(db_prof))
-            .unwrap_or_else(|| AccountProfile::new(addr))
+    fn detect_fast_in_fast_out(
+        account: &AccountProfile,
+        incoming_amount: U256,
+        current_block: u64,
+    ) -> Option<&'static str> {
+        // Example parameters
+        let fast_out_window_blocks: u64 = 50; // 10 minutes (parameterized)
+        let zeroing_out_threshold: U256 = U256::from(1); // dust tolerance
+
+        let mut inflow_sum: U256 = incoming_amount;
+
+        inflow_sum += account.recv_amounts.iter()
+            .filter(|(block, _, _)| current_block - *block <= fast_out_window_blocks)
+            .map(|(_, amt, _)| *amt)
+            .fold(U256::from(0), |acc, x| acc + x);
+
+        let outflow_sum: U256 = account.sent_amounts.iter()
+            .filter(|(block, _, _)| current_block - *block <= fast_out_window_blocks)
+            .map(|(_, amt, _)| *amt)
+            .fold(U256::from(0), |acc, x| acc + x);
+
+        if inflow_sum > U256::from(0) && outflow_sum > U256::from(0) {
+            let epsilon = inflow_sum / U256::from(100); // 1% tolerance
+
+            if (outflow_sum >= inflow_sum.saturating_sub(epsilon))
+                && (outflow_sum <= inflow_sum.saturating_add(epsilon))
+            {
+                let projected_balance = account
+                    .total_received
+                    .saturating_add(incoming_amount)
+                    .saturating_sub(account.total_sent + outflow_sum);
+
+                if projected_balance <= zeroing_out_threshold {
+                    return Some("fast_in_fast_out_and_zeroed");
+                } else {
+                    return Some("fast_in_fast_out_suspicious");
+                }
+            }
+        }
+
+        None
     }
 
-    fn update_sender_profile(profile: &mut AccountProfile, block_number: u64, amount: U256) {
+    fn update_sender_profile(profile: &mut AccountProfile, block_number: u64, amount: U256, address: Address) {
         profile.total_sent += amount;
-        profile.sent_amounts.push_back((block_number, amount));
+        profile.sent_amounts.push_back((block_number, amount, address));
     }
 
-    fn update_recipient_profile(profile: &mut AccountProfile, block_number: u64, amount: U256) {
+    fn update_recipient_profile(profile: &mut AccountProfile, block_number: u64, amount: U256, address: Address) {
         profile.total_received += amount;
-        profile.recv_amounts.push_back((block_number, amount));
+        profile.recv_amounts.push_back((block_number, amount, address));
     }
 
     pub fn check_mempool_tx(
@@ -91,7 +135,7 @@ impl AmlEvaluator {
             if let Some(db_profile) = self.db.load_profile(&sender) {
                 self.pending_profiles.insert(sender, AccountProfile::from(db_profile));
             } else {
-                self.pending_profiles.insert(sender, AccountProfile::new(sender));
+                self.pending_profiles.insert(sender, AccountProfile::new(sender, block_number));
             }
         }
 
@@ -99,7 +143,7 @@ impl AmlEvaluator {
             if let Some(db_profile) = self.db.load_profile(&recipient) {
                 self.pending_profiles.insert(recipient, AccountProfile::from(db_profile));
             } else {
-                self.pending_profiles.insert(recipient, AccountProfile::new(recipient));
+                self.pending_profiles.insert(recipient, AccountProfile::new(recipient, block_number));
             }
         }
 
@@ -113,13 +157,13 @@ impl AmlEvaluator {
         }
 
         let mut sender_profile =
-            self.pending_profiles.remove(&sender).unwrap_or_else(|| AccountProfile::new(sender));
+            self.pending_profiles.remove(&sender).unwrap_or_else(|| AccountProfile::new(sender, block_number));
         let mut recipient_profile = self
             .pending_profiles
             .remove(&recipient)
-            .unwrap_or_else(|| AccountProfile::new(recipient));
+            .unwrap_or_else(|| AccountProfile::new(recipient, block_number));
 
-        let reason = Self::check_compliance_internal(&sender_profile, &recipient_profile, amount);
+        let reason = Self::check_compliance_internal(&sender_profile, &recipient_profile, amount, block_number);
 
         if let Some(reason) = reason {
             // Don't update profiles, just reinsert the originals
@@ -127,8 +171,8 @@ impl AmlEvaluator {
             self.pending_profiles.insert(recipient, recipient_profile);
             (false, Some(reason))
         } else {
-            Self::update_sender_profile(&mut sender_profile, block_number, amount);
-            Self::update_recipient_profile(&mut recipient_profile, block_number, amount);
+            Self::update_sender_profile(&mut sender_profile, block_number, amount, recipient);
+            Self::update_recipient_profile(&mut recipient_profile, block_number, amount, sender);
             self.pending_profiles.insert(sender, sender_profile);
             self.pending_profiles.insert(recipient, recipient_profile);
             (true, None)
@@ -174,7 +218,7 @@ impl AmlEvaluator {
                     if let Some(db_profile) = self.db.load_profile(&sender) {
                         temp_profiles.insert(sender, AccountProfile::from(db_profile));
                     } else {
-                        temp_profiles.insert(sender, AccountProfile::new(sender));
+                        temp_profiles.insert(sender, AccountProfile::new(sender, block_number));
                     }
                 }
 
@@ -182,27 +226,27 @@ impl AmlEvaluator {
                     if let Some(db_profile) = self.db.load_profile(&recipient) {
                         temp_profiles.insert(recipient, AccountProfile::from(db_profile));
                     } else {
-                        temp_profiles.insert(recipient, AccountProfile::new(recipient));
+                        temp_profiles.insert(recipient, AccountProfile::new(recipient, block_number));
                     }
                 }
 
                 // Get sender and recipient profiles separately to avoid mutable borrow conflict
                 let mut sender_profile =
-                    temp_profiles.remove(&sender).unwrap_or_else(|| AccountProfile::new(sender));
+                    temp_profiles.remove(&sender).unwrap_or_else(|| AccountProfile::new(sender, block_number));
                 let mut recipient_profile = temp_profiles
                     .remove(&recipient)
-                    .unwrap_or_else(|| AccountProfile::new(recipient));
+                    .unwrap_or_else(|| AccountProfile::new(recipient, block_number));
 
                 // println!("sender_profile: {:?}, recipient_profile: {:?}", sender_profile, recipient_profile);
 
                 let reason =
-                    Self::check_compliance_internal(&sender_profile, &recipient_profile, amount);
+                    Self::check_compliance_internal(&sender_profile, &recipient_profile, amount, block_number);
 
                 if let Some(reason) = reason {
                     results.push((false, Some(reason)));
                 } else {
-                    Self::update_sender_profile(&mut sender_profile, block_number, amount);
-                    Self::update_recipient_profile(&mut recipient_profile, block_number, amount);
+                    Self::update_sender_profile(&mut sender_profile, block_number, amount, recipient);
+                    Self::update_recipient_profile(&mut recipient_profile, block_number, amount, sender);
                     results.push((true, None));
                 }
 
@@ -232,10 +276,10 @@ impl AmlEvaluator {
                 .db
                 .load_profile(&sender)
                 .map(AccountProfile::from)
-                .unwrap_or_else(|| AccountProfile::new(sender));
+                .unwrap_or_else(|| AccountProfile::new(sender, block_number));
 
-            sender_profile.prune_old(block_number);
-            Self::update_sender_profile(&mut sender_profile, block_number, amount);
+            sender_profile.prune_old(block_number, BLOCK_WINDOW);
+            Self::update_sender_profile(&mut sender_profile, block_number, amount, recipient);
 
             let sender_profile_do = AccountProfileDb::from(&sender_profile);
 
@@ -249,10 +293,10 @@ impl AmlEvaluator {
                 .db
                 .load_profile(&recipient)
                 .map(AccountProfile::from)
-                .unwrap_or_else(|| AccountProfile::new(recipient));
+                .unwrap_or_else(|| AccountProfile::new(recipient, block_number));
 
-            recipient_profile.prune_old(block_number);
-            Self::update_recipient_profile(&mut recipient_profile, block_number, amount);
+            recipient_profile.prune_old(block_number, BLOCK_WINDOW);
+            Self::update_recipient_profile(&mut recipient_profile, block_number, amount, sender);
 
             let recipient_profile_do = AccountProfileDb::from(&recipient_profile);
 
@@ -279,9 +323,9 @@ impl AmlEvaluator {
                 .db
                 .load_profile(&sender)
                 .map(AccountProfile::from)
-                .unwrap_or_else(|| AccountProfile::new(sender));
-            sender_profile.prune_old(block_number);
-            Self::update_sender_profile(&mut sender_profile, block_number, amount);
+                .unwrap_or_else(|| AccountProfile::new(sender, block_number));
+            sender_profile.prune_old(block_number, BLOCK_WINDOW);
+            Self::update_sender_profile(&mut sender_profile, block_number, amount, recipient);
             profiles_to_save.insert(sender, AccountProfileDb::from(&sender_profile));
 
             // recipient
@@ -289,9 +333,9 @@ impl AmlEvaluator {
                 .db
                 .load_profile(&recipient)
                 .map(AccountProfile::from)
-                .unwrap_or_else(|| AccountProfile::new(recipient));
-            recipient_profile.prune_old(block_number);
-            Self::update_recipient_profile(&mut recipient_profile, block_number, amount);
+                .unwrap_or_else(|| AccountProfile::new(recipient, block_number));
+            recipient_profile.prune_old(block_number, BLOCK_WINDOW);
+            Self::update_recipient_profile(&mut recipient_profile, block_number, amount, sender);
             profiles_to_save.insert(recipient, AccountProfileDb::from(&recipient_profile));
         }
 
