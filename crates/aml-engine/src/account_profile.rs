@@ -1,67 +1,81 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap};
 use alloy_primitives::{Address, U256};
+
+const DAILY_WINDOW_BLOCKS: u64 = 7_200;   // ~1 day at 12s/block
+const WEEKLY_WINDOW_BLOCKS: u64 = 50_400; // ~1 week
+const MONTHLY_WINDOW_BLOCKS: u64 = 216_000; // ~30 days
 
 #[derive(Debug, Clone)]
 pub struct AccountProfile {
     pub address: Address,
-    pub sent_amounts: VecDeque<(u64, U256, Address)>,
-    pub recv_amounts: VecDeque<(u64, U256, Address)>,
-    pub total_sent: U256,
-    pub total_received: U256,
-
-    // Mule-specific features
-    pub unique_senders: HashMap<Address, u64>,     // senders in current window
-    pub unique_recipients: HashMap<Address, u64>,  // recipients in current window
-    pub first_seen_block: u64,                // for lifetime analysis
+    pub spends: BTreeMap<u64, U256>, // block_number => total spent in that block
+    pub daily_sum: U256,             // Cached sum for last 7,200 blocks
+    pub weekly_sum: U256,            // Cached sum for last 50,400 blocks
+    pub monthly_sum: U256,           // Cached sum for last 216,000 blocks
+    pub last_update_block: u64,      // Last block number this profile was updated
 }
 
 impl AccountProfile {
     pub fn new(address: Address, block_number: u64) -> Self {
         Self {
             address,
-            sent_amounts: VecDeque::new(),
-            recv_amounts: VecDeque::new(),
-            total_sent: U256::from(0),
-            total_received: U256::from(0),
-            unique_senders: HashMap::new(),
-            unique_recipients: HashMap::new(),
-            first_seen_block: block_number,
+            spends: BTreeMap::new(),
+            daily_sum: U256::from(0),
+            weekly_sum: U256::from(0),
+            monthly_sum: U256::from(0),
+            last_update_block: block_number,
         }
     }
 
+    /// Prune spends older than the specified window and recompute sums.
     pub fn prune_old(&mut self, now: u64, window: u64) {
-        // Prune sent amounts
-        while let Some(front) = self.sent_amounts.front().cloned() {
-            let (block, amt, recipient) = front;
-            if now.saturating_sub(block) > window {
-                self.sent_amounts.pop_front();
-                self.total_sent = self.total_sent.saturating_sub(amt);
-
-                if let Some(&last_seen) = self.unique_recipients.get(&recipient) {
-                    if last_seen == block {
-                        self.unique_recipients.remove(&recipient);
-                    }
-                }
-            } else {
+        // Prune spends outside the window
+        while let Some((&block_num, _)) = self.spends.iter().next() {
+            if block_num >= now.saturating_sub(window) {
                 break;
             }
+            self.spends.remove(&block_num);
         }
 
-        // Prune received amounts
-        while let Some(front) = self.recv_amounts.front().cloned() {
-            let (block, amt, sender) = front;
-            if now.saturating_sub(block) > window {
-                self.recv_amounts.pop_front();
-                self.total_received = self.total_received.saturating_sub(amt);
+        // Recompute cached sums
+        self.last_update_block = now;
+        self.monthly_sum = self.sum_range(now.saturating_sub(MONTHLY_WINDOW_BLOCKS), now);
+        self.weekly_sum = self.sum_range(now.saturating_sub(WEEKLY_WINDOW_BLOCKS), now);
+        self.daily_sum = self.sum_range(now.saturating_sub(DAILY_WINDOW_BLOCKS), now);
+    }
 
-                if let Some(&last_seen) = self.unique_senders.get(&sender) {
-                    if last_seen == block {
-                        self.unique_senders.remove(&sender);
-                    }
-                }
-            } else {
-                break;
+    /// Sum spends in the range [start_block, end_block).
+    fn sum_range(&self, start_block: u64, end_block: u64) -> U256 {
+        self.spends
+            .range(start_block..=end_block)
+            .map(|(_, &sum)| sum)
+            .fold(U256::from(0), |acc, x| acc + x)
+    }
+
+    /// Add a spend amount for a block (for new txs or block processing).
+    pub fn add_spend(&mut self, block_number: u64, amount: U256) {
+        self.spends
+            .entry(block_number)
+            .and_modify(|e| *e += amount)
+            .or_insert(amount);
+        self.prune_old(block_number, MONTHLY_WINDOW_BLOCKS);
+    }
+
+    /// Remove a spend amount for a block (for reorgs or tx replacements).
+    pub fn remove_spend(&mut self, block_number: u64, amount: U256) {
+        if let Some(entry) = self.spends.get_mut(&block_number) {
+            *entry = entry.saturating_sub(amount);
+            if *entry == U256::from(0) {
+                self.spends.remove(&block_number);
             }
         }
+        self.prune_old(block_number, MONTHLY_WINDOW_BLOCKS);
+    }
+
+    /// Check if adding a spend would exceed AML limits.
+    pub fn would_exceed_limits(&self, amount: U256, daily_limit: U256, weekly_limit: U256, monthly_limit: U256) -> bool {
+        self.daily_sum + amount > daily_limit ||
+            self.weekly_sum + amount > weekly_limit ||
+            self.monthly_sum + amount > monthly_limit
     }
 }
