@@ -765,14 +765,6 @@ where
         }
 
         self.block_gas_limit.store(new_tip_block.gas_limit(), std::sync::atomic::Ordering::Relaxed);
-
-        // Clear pending profiles once block is added
-        let mut aml_evaluator = AML_EVALUATOR
-            .get()
-            .expect("AML_EVALUATOR not initialized")
-            .write()
-            .expect("poisoned lock");
-        aml_evaluator.pending_profiles.clear();
     }
 
     fn max_gas_limit(&self) -> u64 {

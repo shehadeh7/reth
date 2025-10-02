@@ -1937,6 +1937,7 @@ impl<T: PoolTransaction> AllTransactions<T> {
                             existing_transaction.transaction.sender(),
                             decoded.to,
                             decoded.amount,
+                            upcoming_block_number,
                         );
                     }
                 }

@@ -47,7 +47,9 @@ pub struct AmlEvaluator {
     db: AmlDb,
     committed_profiles: HashMap<Address, AccountProfile>,
     pending_profiles: HashMap<u64, HashMap<Address, AccountProfile>>,
+    mempool_profiles: HashMap<Address, AccountProfile>,
     finalized_block: u64,
+    current_mempool_block: Option<u64>,
 }
 
 impl AmlEvaluator {
@@ -56,7 +58,9 @@ impl AmlEvaluator {
             db,
             committed_profiles: HashMap::new(),
             pending_profiles: HashMap::new(),
+            mempool_profiles: HashMap::new(),
             finalized_block,
+            current_mempool_block: None,
         }
     }
 
@@ -96,38 +100,43 @@ impl AmlEvaluator {
             return (true, None); // no-op
         }
 
-        let block_profiles = self.pending_profiles.entry(block_number).or_insert_with(HashMap::new);
-
-        // Load or create sender profile
-        if !block_profiles.contains_key(&sender) {
-            let sender_profile = self.committed_profiles.get(&sender).cloned()
-                .or_else(|| self.db.load_profile(&sender).map(AccountProfile::from))
-                .unwrap_or_else(|| AccountProfile::new(sender, block_number));
-            block_profiles.insert(sender, sender_profile);
+        // Reset mempool_profiles if block number changes
+        if self.current_mempool_block != Some(block_number) {
+            self.mempool_profiles.clear();
+            self.current_mempool_block = Some(block_number);
         }
 
-        // Load or create recipient profile
-        if !block_profiles.contains_key(&recipient) {
-            let recipient_profile = self.committed_profiles.get(&recipient).cloned()
-                .or_else(|| self.db.load_profile(&recipient).map(AccountProfile::from))
-                .unwrap_or_else(|| AccountProfile::new(recipient, block_number));
-            block_profiles.insert(recipient, recipient_profile);
+        // Load sender profile
+        let sender_profile = self.mempool_profiles.get(&sender).cloned()
+            .or_else(|| self.pending_profiles.get(&block_number).and_then(|block_profiles| block_profiles.get(&sender).cloned()))
+            .or_else(|| self.committed_profiles.get(&sender).cloned())
+            .or_else(|| self.db.load_profile(&sender).map(AccountProfile::from))
+            .unwrap_or_else(|| AccountProfile::new(sender, block_number));
+
+        // Load recipient profile
+        let recipient_profile = self.mempool_profiles.get(&recipient).cloned()
+            .or_else(|| self.pending_profiles.get(&block_number).and_then(|block_profiles| block_profiles.get(&recipient).cloned()))
+            .or_else(|| self.committed_profiles.get(&recipient).cloned())
+            .or_else(|| self.db.load_profile(&recipient).map(AccountProfile::from))
+            .unwrap_or_else(|| AccountProfile::new(recipient, block_number));
+
+        // Clone profiles for compliance check
+        let mut check_sender_profile = sender_profile.clone();
+        let mut check_recipient_profile = recipient_profile.clone();
+
+        // Apply spends for compliance check
+        Self::update_profile(&mut check_sender_profile, block_number, amount);
+        Self::update_profile(&mut check_recipient_profile, block_number, amount);
+
+        let reason = Self::check_compliance_internal(&check_sender_profile, &check_recipient_profile, amount, block_number);
+
+        if reason.is_none() {
+            // Update mempool_profiles for compliant transactions
+            self.mempool_profiles.insert(sender, check_sender_profile);
+            self.mempool_profiles.insert(recipient, check_recipient_profile);
         }
 
-        let sender_profile = block_profiles.get(&sender).unwrap();
-        let recipient_profile = block_profiles.get(&recipient).unwrap();
-
-        let reason = Self::check_compliance_internal(sender_profile, recipient_profile, amount, block_number);
-
-        if reason.is_some() {
-            (false, reason)
-        } else {
-            let sender_profile = block_profiles.get_mut(&sender).unwrap();
-            Self::update_profile(sender_profile, block_number, amount);
-            let recipient_profile = block_profiles.get_mut(&recipient).unwrap();
-            Self::update_profile(recipient_profile, block_number, amount);
-            (true, None)
-        }
+        (reason.is_none(), reason)
     }
 
     /// Method to revert a single pending transaction from pending profiles
@@ -229,6 +238,13 @@ impl AmlEvaluator {
         updates: &[(Address, Address, U256)],
         block_number: u64,
     ) {
+
+        // Safeguard: clear mempool_profiles if it matches block_number and is non-empty
+        if self.current_mempool_block == Some(block_number) && !self.mempool_profiles.is_empty() {
+            self.mempool_profiles.clear();
+            self.current_mempool_block = None; // Reset to force re-initialization
+        }
+
         let block_profiles = self.pending_profiles.entry(block_number).or_insert_with(HashMap::new);
 
         for &(sender, recipient, amount) in updates {
@@ -343,41 +359,68 @@ mod tests {
         let sender = addr(1);
         let recipient = addr(2);
         let amount = U256::from(100);
+        let block = 1;
 
-        let (ok, reason) = aml.check_mempool_tx(sender, recipient, amount, 1);
+        // Check mempool transaction
+        let (ok, reason) = aml.check_mempool_tx(sender, recipient, amount, block);
         assert!(ok, "Transfer should be allowed");
         assert!(reason.is_none(), "Transfer should pass AML checks");
 
-        // Verify pending_profiles updated
-        let block_profiles = aml.pending_profiles.get(&1).expect("Block profiles should exist");
+        // Verify mempool_profiles updated
+        let sender_profile = aml.mempool_profiles.get(&sender).expect("Sender profile should exist");
+        let recipient_profile = aml.mempool_profiles.get(&recipient).expect("Recipient profile should exist");
+        assert_eq!(
+            sender_profile.daily_sum, amount,
+            "Sender daily_sum should match amount in mempool_profiles"
+        );
+        assert_eq!(
+            recipient_profile.daily_sum, amount,
+            "Recipient daily_sum should match amount in mempool_profiles"
+        );
+        assert_eq!(
+            sender_profile.spends.get(&block).copied(), Some(amount),
+            "Sender spends should include amount in mempool_profiles"
+        );
+        assert_eq!(
+            recipient_profile.spends.get(&block).copied(), Some(amount),
+            "Recipient spends should include amount in mempool_profiles"
+        );
+
+        // Commit block with update_profiles_batch
+        aml.update_profiles_batch(&[(sender, recipient, amount)], block);
+
+        // Verify mempool_profiles cleared and pending_profiles updated
+        assert!(
+            aml.mempool_profiles.is_empty(),
+            "mempool_profiles should be cleared after update_profiles_batch"
+        );
+        let block_profiles = aml.pending_profiles.get(&block).expect("Block profiles should exist");
         let sender_profile = block_profiles.get(&sender).expect("Sender profile should exist");
         let recipient_profile = block_profiles.get(&recipient).expect("Recipient profile should exist");
 
         assert_eq!(
             sender_profile.daily_sum, amount,
-            "Sender daily_sum should match amount"
+            "Sender daily_sum should match amount in pending_profiles"
         );
         assert_eq!(
             recipient_profile.daily_sum, amount,
-            "Recipient daily_sum should match amount"
+            "Recipient daily_sum should match amount in pending_profiles"
         );
         assert_eq!(
-            sender_profile.spends.get(&1).copied(), Some(amount),
-            "Sender spends should include amount"
+            sender_profile.spends.get(&block).copied(), Some(amount),
+            "Sender spends should include amount in pending_profiles"
         );
         assert_eq!(
-            recipient_profile.spends.get(&1).copied(), Some(amount),
-            "Recipient spends should include amount"
+            recipient_profile.spends.get(&block).copied(), Some(amount),
+            "Recipient spends should include amount in pending_profiles"
         );
 
-        // Commit to committed_profiles and DB
-        aml.update_finalized_block(1);
+        // Finalize block
+        aml.update_finalized_block(block);
 
+        // Verify committed_profiles
         let sender_profile = aml.committed_profiles.get(&sender).expect("Sender profile should exist");
-        let recipient_profile = aml
-            .committed_profiles
-            .get(&recipient)
-            .expect("Recipient profile should exist");
+        let recipient_profile = aml.committed_profiles.get(&recipient).expect("Recipient profile should exist");
 
         assert_eq!(
             sender_profile.daily_sum, amount,
@@ -511,6 +554,7 @@ mod tests {
 
         // Verify profile accounting
         aml.update_finalized_block(1);
+        println!("{:?}", aml.committed_profiles);
         let sender_profile = aml.committed_profiles.get(&sender).expect("Sender profile should exist");
         assert_eq!(
             sender_profile.daily_sum,

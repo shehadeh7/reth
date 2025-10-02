@@ -231,9 +231,11 @@ pub async fn maintain_transaction_pool<N, Client, P, St, Tasks>(
         if let Some(finalized) =
             last_finalized_block.update(client.finalized_block_number().ok().flatten())
         {
+            println!("finalized is set to {:?}", finalized);
             if let BlobStoreUpdates::Finalized(blobs) =
                 blob_store_tracker.on_finalized_block(finalized)
             {
+                println!("blob store finalized also changing");
                 metrics.inc_deleted_tracked_blobs(blobs.len());
                 // remove all finalized blobs from the blob store
                 pool.delete_blobs(blobs);
@@ -517,6 +519,7 @@ impl FinalizedBlockTracker {
             .replace(finalized)
             .is_none_or(|last| last < finalized)
             .then_some(finalized)
+        // TODO (ms): If this is where finalized block update occurs, update AML profile here?
     }
 }
 
