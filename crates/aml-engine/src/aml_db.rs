@@ -1,8 +1,8 @@
-use std::collections::{BTreeMap};
+use std::collections::{BTreeMap, HashMap};
 use alloy_primitives::{Address, FixedBytes, U256};
 use bincode::{Encode, Decode, config};
 use redb::{Database, TableDefinition};
-use crate::account_profile::AccountProfile;
+use crate::account_profile::{AccountProfile, BlockMetrics, WindowCache};
 
 #[derive(Debug, Clone, Encode, Decode)]
 pub struct SerializableU256([u8; 32]);
@@ -19,47 +19,141 @@ impl From<SerializableU256> for U256 {
     }
 }
 
+#[derive(Debug, Clone, Encode, Decode)]
+pub struct BlockMetricsDb {
+    pub spend_amount: SerializableU256,   // Outbound spend
+    pub receive_amount: SerializableU256, // Inbound receive
+    pub tx_count: u32,                    // Outbound count (velocity)
+    // Store maps as Vec<(addr, count)> for stable encoding
+    pub recipients: Vec<([u8; 20], u32)>, // Outbound fan-out (addr => count in block)
+    pub senders: Vec<([u8; 20], u32)>,    // Inbound fan-in  (addr => count in block)
+}
+
+
+impl From<&BlockMetrics> for BlockMetricsDb {
+    fn from(m: &BlockMetrics) -> Self {
+        Self {
+            spend_amount: m.spend_amount.into(),
+            receive_amount: m.receive_amount.into(),
+            tx_count: m.tx_count,
+            recipients: m.recipients.iter()
+                .map(|(a, c)| (*a.0.as_ref(), *c))
+                .collect(),
+            senders: m.senders.iter()
+                .map(|(a, c)| (*a.0.as_ref(), *c))
+                .collect(),
+        }
+    }
+}
+
+impl From<BlockMetricsDb> for BlockMetrics {
+    fn from(d: BlockMetricsDb) -> Self {
+        let recipients: HashMap<Address, u32> = d.recipients
+            .into_iter()
+            .map(|(b, c)| (Address(FixedBytes::from(b)), c))
+            .collect();
+
+        let senders: HashMap<Address, u32> = d.senders
+            .into_iter()
+            .map(|(b, c)| (Address(FixedBytes::from(b)), c))
+            .collect();
+
+        Self {
+            spend_amount: d.spend_amount.into(),
+            receive_amount: d.receive_amount.into(),
+            tx_count: d.tx_count,
+            recipients,
+            senders,
+        }
+    }
+}
+
+
+#[derive(Debug, Clone, Encode, Decode)]
+pub struct WindowCacheDb {
+    pub sum: SerializableU256,         // Outbound sum
+    pub inbound_sum: SerializableU256, // Inbound sum
+    pub count: u32,                    // Outbound count
+    pub unique_out: u32,               // Fan-out (avoid usize on disk)
+    pub unique_in: u32,                // Fan-in
+}
+
+impl From<&WindowCache> for WindowCacheDb {
+    fn from(w: &WindowCache) -> Self {
+        Self {
+            sum: w.sum.into(),
+            inbound_sum: w.inbound_sum.into(),
+            count: w.count,
+            unique_out: w.unique_out as u32,
+            unique_in: w.unique_in as u32,
+        }
+    }
+}
+
+impl From<WindowCacheDb> for WindowCache {
+    fn from(d: WindowCacheDb) -> Self {
+        Self {
+            sum: d.sum.into(),
+            inbound_sum: d.inbound_sum.into(),
+            count: d.count,
+            unique_out: d.unique_out as usize,
+            unique_in: d.unique_in as usize,
+        }
+    }
+}
+
 // possibly move these into another file, integrate with existing aml module, see what to persist
 #[derive(Debug, Clone, Encode, Decode)]
 pub struct AccountProfileDb {
     address: [u8; 20],
-    spends: BTreeMap<u64, SerializableU256>, // block_number => total spent in that block
-    daily_sum: SerializableU256,             // Cached sum for last 7,200 blocks
-    weekly_sum: SerializableU256,            // Cached sum for last 50,400 blocks
-    monthly_sum: SerializableU256,           // Cached sum for last 216,000 blocks
+
+    // block_number => metrics for that block
+    pub metrics: BTreeMap<u64, BlockMetricsDb>,
+
+    // per-window caches; indices must align with `windows`
+    pub caches: Vec<WindowCacheDb>,
+
     last_update_block: u64,      // Last block number this profile was updated
 }
 
 impl From<&AccountProfile> for AccountProfileDb {
     fn from(profile: &AccountProfile) -> Self {
+
+        // Convert BTreeMap<u64, BlockMetrics> -> BTreeMap<u64, BlockMetricsDb>
+        let metrics = profile.metrics.iter()
+            .map(|(blk, m)| (*blk, BlockMetricsDb::from(m)))
+            .collect::<BTreeMap<_, _>>();
+
+        let caches = profile.caches.iter()
+            .map(WindowCacheDb::from)
+            .collect::<Vec<_>>();
+
         Self {
             address: *profile.address.0.as_ref(),
-            spends: profile
-                .spends
-                .iter()
-                .map(|(&block, &amount)| (block, amount.into()))
-                .collect(),
-            daily_sum: profile.daily_sum.into(),
-            weekly_sum: profile.weekly_sum.into(),
-            monthly_sum: profile.monthly_sum.into(),
+            metrics,
+            caches,
             last_update_block: profile.last_update_block,
         }
     }
 }
 
 impl From<AccountProfileDb> for AccountProfile {
-    fn from(db: AccountProfileDb) -> Self {
+    fn from(d: AccountProfileDb) -> Self {
+
+        let metrics = d.metrics.into_iter()
+            .map(|(blk, mdb)| (blk, BlockMetrics::from(mdb)))
+            .collect::<BTreeMap<_, _>>();
+
+        let caches = d.caches.into_iter()
+            .map(WindowCache::from)
+            .collect::<Vec<_>>();
+
+
         Self {
-            address: Address(FixedBytes::from(db.address)),
-            spends: db
-                .spends
-                .into_iter()
-                .map(|(block, amount)| (block, amount.into()))
-                .collect(),
-            daily_sum: db.daily_sum.into(),
-            weekly_sum: db.weekly_sum.into(),
-            monthly_sum: db.monthly_sum.into(),
-            last_update_block: db.last_update_block,
+            address: Address(FixedBytes::from(d.address)),
+            metrics,
+            caches,
+            last_update_block: d.last_update_block,
         }
     }
 }
@@ -141,187 +235,272 @@ impl AmlDb {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
     use alloy_primitives::{Address, U256};
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, HashMap};
+    use tempfile::tempdir;
 
-    const DAILY_WINDOW_BLOCKS: u64 = 7_200;   // ~1 day at 12s/block
-    const WEEKLY_WINDOW_BLOCKS: u64 = 50_400; // ~1 week
-    const MONTHLY_WINDOW_BLOCKS: u64 = 216_000; // ~30 days
+    // Keep this in sync with your module’s const
+    const WINDOWS: &[u64] = &[7_200, 50_400, 216_000];
+
+    // ---------------- Helpers ----------------
 
     fn addr(byte: u8) -> Address {
-        // helper to make dummy addresses like 0x000..01, 0x000..02, etc.
         Address::repeat_byte(byte)
     }
 
-    fn new_db() -> AmlDb {
-        // temp dir to avoid writing to real DB
+    /// Keep TempDir alive for the test scope so the DB path is not deleted early.
+    fn new_db() -> (AmlDb, tempfile::TempDir) {
         let dir = tempdir().unwrap();
         let db_path = dir.path().join("aml_db");
-        AmlDb::new(db_path.to_str().unwrap())
+        let db = AmlDb::new(db_path.to_str().unwrap());
+        (db, dir)
     }
 
-    #[test]
-    fn test_save_load_profile() {
-        let db = new_db();
+    fn mk_block_metrics(
+        spend: u128,
+        receive: u128,
+        tx_count: u32,
+        recipients: &[(u8, u32)],
+        senders: &[(u8, u32)],
+    ) -> BlockMetrics {
+        let mut r: HashMap<Address, u32> = HashMap::new();
+        let mut s: HashMap<Address, u32> = HashMap::new();
+        for (b, c) in recipients {
+            r.insert(addr(*b), *c);
+        }
+        for (b, c) in senders {
+            s.insert(addr(*b), *c);
+        }
+        BlockMetrics {
+            spend_amount: U256::from(spend),
+            receive_amount: U256::from(receive),
+            tx_count,
+            recipients: r,
+            senders: s,
+        }
+    }
 
-        // Create an AccountProfile
-        let mut spends = BTreeMap::new();
-        spends.insert(19_950_000, U256::from(300_000));
-        spends.insert(20_000_000, U256::from(210_100));
-        let bo_profile = AccountProfile {
+    fn mk_cache(sum: u128, inbound_sum: u128, count: u32, unique_out: u32, unique_in: u32) -> WindowCache {
+        WindowCache {
+            sum: U256::from(sum),
+            inbound_sum: U256::from(inbound_sum),
+            count,
+            unique_out: unique_out as usize,
+            unique_in: unique_in as usize,
+        }
+    }
+
+    fn assert_u256_eq(a: U256, b: U256, lbl: &str) {
+        assert_eq!(a, b, "{lbl} U256 mismatch: left={a}, right={b}");
+    }
+
+    fn assert_maps_eq(a: &HashMap<Address, u32>, b: &HashMap<Address, u32>, label: &str) {
+        assert_eq!(a.len(), b.len(), "{label} size differs");
+        for (k, av) in a {
+            let bv = b.get(k).copied();
+            assert_eq!(Some(*av), bv, "{label} entry mismatch at {k:?}");
+        }
+    }
+
+    fn assert_block_metrics_eq(a: &BlockMetrics, b: &BlockMetrics) {
+        assert_u256_eq(a.spend_amount, b.spend_amount, "spend_amount");
+        assert_u256_eq(a.receive_amount, b.receive_amount, "receive_amount");
+        assert_eq!(a.tx_count, b.tx_count, "tx_count mismatch");
+        assert_maps_eq(&a.recipients, &b.recipients, "recipients");
+        assert_maps_eq(&a.senders, &b.senders, "senders");
+    }
+
+    fn assert_cache_eq(a: &WindowCache, b: &WindowCache) {
+        assert_u256_eq(a.sum, b.sum, "cache.sum");
+        assert_u256_eq(a.inbound_sum, b.inbound_sum, "cache.inbound_sum");
+        assert_eq!(a.count, b.count, "cache.count mismatch");
+        assert_eq!(a.unique_out, b.unique_out, "cache.unique_out mismatch");
+        assert_eq!(a.unique_in, b.unique_in, "cache.unique_in mismatch");
+    }
+
+    fn assert_profile_eq(a: &AccountProfile, b: &AccountProfile) {
+        assert_eq!(a.address, b.address, "address mismatch");
+        assert_eq!(a.last_update_block, b.last_update_block, "last_update_block mismatch");
+
+        // metrics
+        assert_eq!(a.metrics.len(), b.metrics.len(), "metrics length mismatch");
+        for (blk, ma) in &a.metrics {
+            let mb = b.metrics.get(blk).expect("missing block in loaded metrics");
+            assert_block_metrics_eq(ma, mb);
+        }
+
+        // caches
+        assert_eq!(a.caches.len(), b.caches.len(), "caches length mismatch");
+        assert_eq!(a.caches.len(), WINDOWS.len(), "caches/windows length mismatch");
+        for (ca, cb) in a.caches.iter().zip(b.caches.iter()) {
+            assert_cache_eq(ca, cb);
+        }
+    }
+
+    // ---------------- Tests ----------------
+
+    #[test]
+    fn test_save_load_profile_roundtrip() {
+        let (db, _tmp) = new_db();
+
+        // Build runtime profile
+        let mut metrics = BTreeMap::new();
+        metrics.insert(
+            20_000_000u64,
+            mk_block_metrics(
+                300_000,   // spend
+                100_000,   // receive
+                3,         // tx_count
+                &[(2, 2), (3, 1)], // recipients
+                &[(9, 3)],         // senders
+            ),
+        );
+        metrics.insert(
+            19_950_000u64,
+            mk_block_metrics(
+                210_100,
+                25_000,
+                1,
+                &[(4, 1)],
+                &[(8, 1)],
+            ),
+        );
+
+        let caches = vec![
+            // daily
+            mk_cache(300_000, 100_000, 3, 2, 1),
+            // weekly
+            mk_cache(510_100, 125_000, 4, 3, 2),
+            // monthly
+            mk_cache(510_100, 125_000, 4, 3, 2),
+        ];
+
+        let profile = AccountProfile {
             address: addr(1),
-            spends,
-            daily_sum: U256::from(210_100),    // Only block 20_000_000 in daily window
-            weekly_sum: U256::from(210_100),   // Only block 20_000_000 in weekly window
-            monthly_sum: U256::from(510_100),  // Both blocks in monthly window
+            metrics,
+            caches,
             last_update_block: 20_000_000,
         };
 
-        let db_profile: AccountProfileDb = AccountProfileDb::from(&bo_profile); // implement From<BO> for DB
-
-        // Save to DB
+        // Save → Load → Convert back to runtime
+        let db_profile: AccountProfileDb = (&profile).into();
         db.save_profile(&db_profile);
 
-        // Load back from DB
-        let loaded = db.load_profile(&addr(1)).expect("Failed to load profile");
+        let loaded_db = db.load_profile(&addr(1)).expect("Failed to load profile");
+        let loaded_profile: AccountProfile = loaded_db.into();
 
-        // Compare fields
-        assert_eq!(loaded.address, bo_profile.address);
-        assert_eq!(Into::<U256>::into(loaded.daily_sum), bo_profile.daily_sum);
-        assert_eq!(Into::<U256>::into(loaded.weekly_sum), bo_profile.weekly_sum);
-        assert_eq!(Into::<U256>::into(loaded.monthly_sum), bo_profile.monthly_sum);
-        assert_eq!(loaded.last_update_block, bo_profile.last_update_block);
+        assert_profile_eq(&profile, &loaded_profile);
     }
 
     #[test]
-    fn test_save_profiles_batch() {
-        let db = new_db();
+    fn test_save_profiles_batch_roundtrip() {
+        let (db, _tmp) = new_db();
 
-        // Create two AccountProfiles
-        let mut spends1 = BTreeMap::new();
-        spends1.insert(19_950_000, U256::from(300_000));
-        spends1.insert(20_000_000, U256::from(210_100));
-        let bo_profile1 = AccountProfile {
+        // Profile 1
+        let mut m1 = BTreeMap::new();
+        m1.insert(20_000_000u64, mk_block_metrics(111, 222, 1, &[(0xAA, 1)], &[(0xBB, 1)]));
+        let p1 = AccountProfile {
             address: addr(1),
-            spends: spends1,
-            daily_sum: U256::from(210_100),
-            weekly_sum: U256::from(210_100),
-            monthly_sum: U256::from(510_100),
+            metrics: m1,
+            caches: vec![
+                mk_cache(111, 222, 1, 1, 1),
+                mk_cache(111, 222, 1, 1, 1),
+                mk_cache(111, 222, 1, 1, 1),
+            ],
             last_update_block: 20_000_000,
         };
 
-        let mut spends2 = BTreeMap::new();
-        spends2.insert(19_999_000, U256::from(100_000));
-        spends2.insert(20_000_000, U256::from(200_000));
-        let bo_profile2 = AccountProfile {
+        // Profile 2
+        let mut m2 = BTreeMap::new();
+        m2.insert(19_123_456u64, mk_block_metrics(999_999, 0, 2, &[(0x01, 2)], &[]));
+        m2.insert(19_123_999u64, mk_block_metrics(1, 2, 1, &[(0x02, 1)], &[(0x03, 1)]));
+        let p2 = AccountProfile {
             address: addr(2),
-            spends: spends2,
-            daily_sum: U256::from(200_000),
-            weekly_sum: U256::from(300_000),
-            monthly_sum: U256::from(300_000),
-            last_update_block: 20_000_000,
+            metrics: m2,
+            caches: vec![
+                mk_cache(1, 2, 1, 1, 1),
+                mk_cache(1_000_000, 2, 3, 2, 1),
+                mk_cache(1_000_000, 2, 3, 2, 1),
+            ],
+            last_update_block: 19_124_000,
         };
 
-        let db_profile1 = AccountProfileDb::from(&bo_profile1);
-        let db_profile2 = AccountProfileDb::from(&bo_profile2);
+        let d1: AccountProfileDb = (&p1).into();
+        let d2: AccountProfileDb = (&p2).into();
 
-        // Save batch to DB
-        db.save_profiles_batch(&[db_profile1.clone(), db_profile2.clone()]);
+        // Batch save
+        db.save_profiles_batch(&[d1.clone(), d2.clone()]);
 
-        // Load back from DB
-        let loaded1 = db.load_profile(&addr(1)).expect("Failed to load profile 1");
-        let loaded2 = db.load_profile(&addr(2)).expect("Failed to load profile 2");
+        // Load and compare
+        let l1: AccountProfile = db.load_profile(&addr(1)).unwrap().into();
+        let l2: AccountProfile = db.load_profile(&addr(2)).unwrap().into();
 
-        // Compare fields for profile 1
-        assert_eq!(loaded1.address, bo_profile1.address);
-        assert_eq!(Into::<U256>::into(loaded1.daily_sum), bo_profile1.daily_sum);
-        assert_eq!(Into::<U256>::into(loaded1.weekly_sum), bo_profile1.weekly_sum);
-        assert_eq!(Into::<U256>::into(loaded1.monthly_sum), bo_profile1.monthly_sum);
-        assert_eq!(loaded1.last_update_block, bo_profile1.last_update_block);
-
-        // Compare fields for profile 2
-        assert_eq!(loaded2.address, bo_profile2.address);
-        assert_eq!(Into::<U256>::into(loaded2.daily_sum), bo_profile2.daily_sum);
-        assert_eq!(Into::<U256>::into(loaded2.weekly_sum), bo_profile2.weekly_sum);
-        assert_eq!(Into::<U256>::into(loaded2.monthly_sum), bo_profile2.monthly_sum);
-        assert_eq!(loaded2.last_update_block, bo_profile2.last_update_block);
+        assert_profile_eq(&p1, &l1);
+        assert_profile_eq(&p2, &l2);
     }
 
     #[test]
-    fn test_prune_and_save_load() {
-        let db = new_db();
+    fn test_blockmetrics_maps_roundtrip() {
+        let (db, _tmp) = new_db();
 
-        // Create a profile with old and recent spends
-        let mut spends = BTreeMap::new();
-        spends.insert(19_700_000, U256::from(500_000)); // Outside monthly window
-        spends.insert(19_950_000, U256::from(300_000)); // Inside monthly window
-        spends.insert(20_000_000, U256::from(210_100)); // Recent
-        let mut bo_profile = AccountProfile {
-            address: addr(1),
-            spends,
-            daily_sum: U256::from(0),
-            weekly_sum: U256::from(210_100),
-            monthly_sum: U256::from(510_100), // Initially incorrect, will be fixed by prune
-            last_update_block: 20_000_000,
+        let mut metrics = BTreeMap::new();
+        metrics.insert(
+            77u64,
+            mk_block_metrics(
+                1_234_567,
+                765_432,
+                5,
+                &[(0x10, 1), (0x11, 2), (0x12, 2)],
+                &[(0xA0, 3), (0xA1, 1), (0xA2, 1)],
+            ),
+        );
+
+        let profile = AccountProfile {
+            address: addr(0xFF),
+            metrics,
+            caches: vec![
+                mk_cache(1_234_567, 765_432, 5, 3, 3),
+                mk_cache(1_234_567, 765_432, 5, 3, 3),
+                mk_cache(1_234_567, 765_432, 5, 3, 3),
+            ],
+            last_update_block: 77,
         };
 
-        // Prune spends outside monthly window
-        bo_profile.prune_old(20_000_000, MONTHLY_WINDOW_BLOCKS);
+        db.save_profile(&AccountProfileDb::from(&profile));
 
-        println!("{:#?}", bo_profile);
+        let loaded: AccountProfile = db.load_profile(&addr(0xFF)).unwrap().into();
 
-        // Verify pruning
-        assert!(!bo_profile.spends.contains_key(&19_700_000)); // Pruned
-        assert!(bo_profile.spends.contains_key(&19_950_000)); // Kept
-        assert!(bo_profile.spends.contains_key(&20_000_000)); // Kept
-        assert_eq!(bo_profile.daily_sum, U256::from(210_100));
-        assert_eq!(bo_profile.weekly_sum, U256::from(510_100));
-        assert_eq!(bo_profile.monthly_sum, U256::from(510_100)); // 300_000 + 210_100
+        // Deep compare
+        assert_profile_eq(&profile, &loaded);
 
-        let db_profile = AccountProfileDb::from(&bo_profile);
-
-        // Save to DB
-        db.save_profile(&db_profile);
-
-        // Load back
-        let loaded = db.load_profile(&addr(1)).expect("Failed to load profile");
-
-        // Compare
-        assert_eq!(loaded.address, bo_profile.address);
-        assert_eq!(loaded.spends.len(), bo_profile.spends.len());
-        assert_eq!(Into::<U256>::into(loaded.daily_sum), bo_profile.daily_sum);
-        assert_eq!(Into::<U256>::into(loaded.weekly_sum), bo_profile.weekly_sum);
-        assert_eq!(Into::<U256>::into(loaded.monthly_sum), bo_profile.monthly_sum);
-        assert_eq!(loaded.last_update_block, bo_profile.last_update_block);
+        // Extra checks on maps
+        let bm = loaded.metrics.get(&77).unwrap();
+        assert_eq!(bm.recipients.get(&addr(0x11)).copied(), Some(2));
+        assert_eq!(bm.senders.get(&addr(0xA2)).copied(), Some(1));
     }
 
     #[test]
     fn test_delete_profile() {
-        let db = new_db();
+        let (db, _tmp) = new_db();
 
-        // Create a profile
-        let mut spends = BTreeMap::new();
-        spends.insert(19_950_000, U256::from(300_000));
-        let bo_profile = AccountProfile {
-            address: addr(1),
-            spends,
-            daily_sum: U256::from(0),
-            weekly_sum: U256::from(300_000),
-            monthly_sum: U256::from(300_000),
-            last_update_block: 20_000_000,
+        let mut metrics = BTreeMap::new();
+        metrics.insert(123u64, mk_block_metrics(42, 0, 1, &[(0x01,1)], &[]));
+        let profile = AccountProfile {
+            address: addr(7),
+            metrics,
+            caches: vec![
+                mk_cache(42, 0, 1, 1, 0),
+                mk_cache(42, 0, 1, 1, 0),
+                mk_cache(42, 0, 1, 1, 0),
+            ],
+            last_update_block: 123,
         };
 
-        let db_profile: AccountProfileDb = AccountProfileDb::from(&bo_profile);
+        db.save_profile(&AccountProfileDb::from(&profile));
 
-        // Save to DB
-        db.save_profile(&db_profile);
+        db.delete_profile(&addr(7));
 
-        // Delete from DB
-        db.delete_profile(&addr(1));
-
-        // Verify profile is gone
-        let loaded = db.load_profile(&addr(1));
-        assert!(loaded.is_none());
+        let none = db.load_profile(&addr(7));
+        assert!(none.is_none(), "profile should be deleted");
     }
 }

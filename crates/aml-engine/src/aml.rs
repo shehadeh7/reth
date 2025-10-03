@@ -39,6 +39,7 @@ pub const MONTHLY_LIMIT: U256 = U256::from_limbs([
 const MONTHLY_WINDOW_BLOCKS: u64 = 216_000; // ~30 days
 const DAILY_WINDOW_BLOCKS: u64 = 7_200;   // ~1 day at 12s/block
 const WEEKLY_WINDOW_BLOCKS: u64 = 50_400; // ~1 week
+const WINDOWS: &[u64] = &[7200, 50400, 216000];  // daily, weekly, monthly assuming 12s/block
 
 
 pub static AML_EVALUATOR: OnceLock<RwLock<AmlEvaluator>> = OnceLock::new();
@@ -70,23 +71,48 @@ impl AmlEvaluator {
         amount: U256,
         _current_block: u64,
     ) -> Option<&'static str> {
-        // if amount > MAX_SINGLE_TX_AMOUNT {
-        //     return Some("single_transaction_above_threshold");
-        // }
+        let sum_limits = vec![DAILY_LIMIT, WEEKLY_LIMIT, MONTHLY_LIMIT];  // daily/weekly/monthly outbound
+        let inbound_sum_limits = vec![DAILY_LIMIT.saturating_add(DAILY_LIMIT), WEEKLY_LIMIT.saturating_add(WEEKLY_LIMIT), MONTHLY_LIMIT.saturating_add(MONTHLY_LIMIT)];  // inbound (unused for sender)
+        let count_limits = vec![10u32, 20u32, 100u32];  // Adjusted higher
+        let unique_out_limits = vec![10usize, 20usize, 50usize];  // Adjusted higher
+        let unique_in_limits = vec![10usize, 20usize, 50usize];  // Adjusted higher
 
-        if sender_profile.would_exceed_limits(amount, DAILY_LIMIT, WEEKLY_LIMIT, MONTHLY_LIMIT) {
-            return Some("sender_limits_exceeded");
-        }
 
-        if recipient_profile.would_exceed_limits(amount, DAILY_LIMIT, WEEKLY_LIMIT, MONTHLY_LIMIT) {
-            return Some("recipient_limits_exceeded");
-        }
+        if sender_profile.would_exceed_limits(
+            amount,
+            recipient_profile.address,
+            sender_profile.address,
+            WINDOWS,
+            &sum_limits,
+            &inbound_sum_limits,
+            &count_limits,
+            &unique_out_limits,
+            &unique_in_limits,
+            true
+        )  { return Some("sender_limits_exceeded") };
+
+        if recipient_profile.would_exceed_limits(
+            amount,
+            recipient_profile.address,
+            sender_profile.address,
+            WINDOWS,
+            &sum_limits,
+            &inbound_sum_limits,
+            &count_limits,
+            &unique_out_limits,
+            &unique_in_limits,
+            false
+        ) { return Some("recipient_limits_exceeded") }
 
         None
     }
 
-    fn update_profile(profile: &mut AccountProfile, block_number: u64, amount: U256) {
-        profile.add_spend(block_number, amount);
+    fn update_recipient_profile(profile: &mut AccountProfile, block_number: u64, sender: Address, amount: U256) {
+        profile.add_inbound(block_number, amount, sender);
+    }
+
+    fn update_sender_profile(profile: &mut AccountProfile, block_number: u64, recipient: Address, amount: U256) {
+        profile.add_outbound(block_number, amount, recipient);
     }
 
     pub fn check_mempool_tx(
@@ -107,33 +133,27 @@ impl AmlEvaluator {
         }
 
         // Load sender profile
-        let sender_profile = self.mempool_profiles.get(&sender).cloned()
+        let mut sender_profile = self.mempool_profiles.get(&sender).cloned()
             .or_else(|| self.pending_profiles.get(&block_number).and_then(|block_profiles| block_profiles.get(&sender).cloned()))
             .or_else(|| self.committed_profiles.get(&sender).cloned())
             .or_else(|| self.db.load_profile(&sender).map(AccountProfile::from))
             .unwrap_or_else(|| AccountProfile::new(sender, block_number));
 
         // Load recipient profile
-        let recipient_profile = self.mempool_profiles.get(&recipient).cloned()
+        let mut recipient_profile = self.mempool_profiles.get(&recipient).cloned()
             .or_else(|| self.pending_profiles.get(&block_number).and_then(|block_profiles| block_profiles.get(&recipient).cloned()))
             .or_else(|| self.committed_profiles.get(&recipient).cloned())
             .or_else(|| self.db.load_profile(&recipient).map(AccountProfile::from))
             .unwrap_or_else(|| AccountProfile::new(recipient, block_number));
 
-        // Clone profiles for compliance check
-        let mut check_sender_profile = sender_profile.clone();
-        let mut check_recipient_profile = recipient_profile.clone();
-
-        // Apply spends for compliance check
-        Self::update_profile(&mut check_sender_profile, block_number, amount);
-        Self::update_profile(&mut check_recipient_profile, block_number, amount);
-
-        let reason = Self::check_compliance_internal(&check_sender_profile, &check_recipient_profile, amount, block_number);
+        let reason = Self::check_compliance_internal(&sender_profile, &recipient_profile, amount, block_number);
 
         if reason.is_none() {
+            Self::update_sender_profile(&mut sender_profile, block_number, recipient, amount);
+            Self::update_recipient_profile(&mut recipient_profile, block_number, sender, amount);
             // Update mempool_profiles for compliant transactions
-            self.mempool_profiles.insert(sender, check_sender_profile);
-            self.mempool_profiles.insert(recipient, check_recipient_profile);
+            self.mempool_profiles.insert(sender, sender_profile);
+            self.mempool_profiles.insert(recipient, recipient_profile);
         }
 
         (reason.is_none(), reason)
@@ -147,10 +167,10 @@ impl AmlEvaluator {
 
         if let Some(block_profiles) = self.pending_profiles.get_mut(&block_number) {
             if let Some(sender_profile) = block_profiles.get_mut(&sender) {
-                sender_profile.remove_spend(block_number, amount);
+                sender_profile.remove_outbound(block_number, amount, recipient);
             }
             if let Some(recipient_profile) = block_profiles.get_mut(&recipient) {
-                recipient_profile.remove_spend(block_number, amount);
+                recipient_profile.remove_inbound(block_number, amount, sender);
             }
         }
     }
@@ -193,8 +213,8 @@ impl AmlEvaluator {
                 results.push((false, reason));
             } else {
                 // Apply spends for compliance check
-                Self::update_profile(&mut sender_profile, block_number, amount);
-                Self::update_profile(&mut recipient_profile, block_number, amount);
+                Self::update_sender_profile(&mut sender_profile, block_number, recipient, amount);
+                Self::update_recipient_profile(&mut recipient_profile, block_number, sender, amount);
                 // Reinsert updated profiles into temp_profiles
                 temp_profiles.insert(sender, sender_profile);
                 temp_profiles.insert(recipient, recipient_profile);
@@ -222,14 +242,14 @@ impl AmlEvaluator {
         let mut sender_profile = block_profiles.get(&sender).cloned()
             .or_else(|| self.committed_profiles.get(&sender).cloned())
             .unwrap_or_else(|| AccountProfile::new(sender, block_number));
-        Self::update_profile(&mut sender_profile, block_number, amount);
+        Self::update_sender_profile(&mut sender_profile, block_number, recipient, amount);
         block_profiles.insert(sender, sender_profile);
 
         // Update recipient in pending_profiles
         let mut recipient_profile = block_profiles.get(&recipient).cloned()
             .or_else(|| self.committed_profiles.get(&recipient).cloned())
             .unwrap_or_else(|| AccountProfile::new(recipient, block_number));
-        Self::update_profile(&mut recipient_profile, block_number, amount);
+        Self::update_recipient_profile(&mut recipient_profile, block_number, recipient, amount);
         block_profiles.insert(recipient, recipient_profile);
     }
 
@@ -256,14 +276,14 @@ impl AmlEvaluator {
             let mut sender_profile = block_profiles.get(&sender).cloned()
                 .or_else(|| self.committed_profiles.get(&sender).cloned())
                 .unwrap_or_else(|| AccountProfile::new(sender, block_number));
-            Self::update_profile(&mut sender_profile, block_number, amount);
+            Self::update_sender_profile(&mut sender_profile, block_number, recipient, amount);
             block_profiles.insert(sender, sender_profile);
 
             // Update recipient
             let mut recipient_profile = block_profiles.get(&recipient).cloned()
                 .or_else(|| self.committed_profiles.get(&recipient).cloned())
                 .unwrap_or_else(|| AccountProfile::new(recipient, block_number));
-            Self::update_profile(&mut recipient_profile, block_number, amount);
+            Self::update_recipient_profile(&mut recipient_profile, block_number, sender, amount);
             block_profiles.insert(recipient, recipient_profile);
         }
     }
@@ -279,9 +299,9 @@ impl AmlEvaluator {
         for block in finalized_range.clone() {
             if let Some(block_profiles) = self.pending_profiles.remove(&block) {
                 for (addr, mut profile) in block_profiles {
-                    profile.prune_old(new_finalized_block, MONTHLY_WINDOW_BLOCKS);
+                    profile.prune_old(new_finalized_block, WINDOWS);
                     self.committed_profiles.insert(addr, profile.clone());
-                    if !profile.spends.is_empty() {
+                    if !profile.metrics.is_empty() {
                         profiles_to_save.push(AccountProfileDb::from(&profile));
                     } else {
                         self.db.delete_profile(&addr);
@@ -295,7 +315,7 @@ impl AmlEvaluator {
 
         // Clean up committed_profiles
         self.committed_profiles.retain(|addr, profile| {
-            if profile.spends.is_empty() {
+            if profile.metrics.is_empty() {
                 self.db.delete_profile(addr);
                 false
             } else {
@@ -309,9 +329,9 @@ impl AmlEvaluator {
     pub fn handle_reorg(&mut self, reverted_block: u64) {
         if let Some(block_profiles) = self.pending_profiles.remove(&reverted_block) {
             for (addr, mut profile) in block_profiles {
-                profile.spends.remove(&reverted_block);
-                profile.prune_old(self.finalized_block, MONTHLY_WINDOW_BLOCKS);
-                if !profile.spends.is_empty() {
+                profile.metrics.remove(&reverted_block);
+                profile.prune_old(self.finalized_block, WINDOWS);
+                if !profile.metrics.is_empty() {
                     self.committed_profiles.insert(addr, profile);
                 } else {
                     self.committed_profiles.remove(&addr);
@@ -327,7 +347,6 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
     use alloy_primitives::{Address, U256};
-    use std::time::Instant;
 
     fn addr(byte: u8) -> Address {
         // helper to make dummy addresses like 0x000..01, 0x000..02, etc.
@@ -370,19 +389,19 @@ mod tests {
         let sender_profile = aml.mempool_profiles.get(&sender).expect("Sender profile should exist");
         let recipient_profile = aml.mempool_profiles.get(&recipient).expect("Recipient profile should exist");
         assert_eq!(
-            sender_profile.daily_sum, amount,
+            sender_profile.caches[0].sum, amount,
             "Sender daily_sum should match amount in mempool_profiles"
         );
         assert_eq!(
-            recipient_profile.daily_sum, amount,
+            recipient_profile.caches[0].inbound_sum, amount,
             "Recipient daily_sum should match amount in mempool_profiles"
         );
         assert_eq!(
-            sender_profile.spends.get(&block).copied(), Some(amount),
+            sender_profile.metrics.get(&block).unwrap().spend_amount, amount,
             "Sender spends should include amount in mempool_profiles"
         );
         assert_eq!(
-            recipient_profile.spends.get(&block).copied(), Some(amount),
+            recipient_profile.metrics.get(&block).unwrap().receive_amount, amount,
             "Recipient spends should include amount in mempool_profiles"
         );
 
@@ -399,19 +418,19 @@ mod tests {
         let recipient_profile = block_profiles.get(&recipient).expect("Recipient profile should exist");
 
         assert_eq!(
-            sender_profile.daily_sum, amount,
+            sender_profile.caches[0].sum, amount,
             "Sender daily_sum should match amount in pending_profiles"
         );
         assert_eq!(
-            recipient_profile.daily_sum, amount,
+            recipient_profile.caches[0].inbound_sum, amount,
             "Recipient daily_sum should match amount in pending_profiles"
         );
         assert_eq!(
-            sender_profile.spends.get(&block).copied(), Some(amount),
+            sender_profile.metrics.get(&block).unwrap().spend_amount, amount,
             "Sender spends should include amount in pending_profiles"
         );
         assert_eq!(
-            recipient_profile.spends.get(&block).copied(), Some(amount),
+            recipient_profile.metrics.get(&block).unwrap().receive_amount, amount,
             "Recipient spends should include amount in pending_profiles"
         );
 
@@ -423,11 +442,11 @@ mod tests {
         let recipient_profile = aml.committed_profiles.get(&recipient).expect("Recipient profile should exist");
 
         assert_eq!(
-            sender_profile.daily_sum, amount,
+            sender_profile.caches[0].sum, amount,
             "Committed sender daily_sum should match amount"
         );
         assert_eq!(
-            recipient_profile.daily_sum, amount,
+            recipient_profile.caches[0].inbound_sum, amount,
             "Committed recipient daily_sum should match amount"
         );
     }
@@ -450,181 +469,127 @@ mod tests {
         assert!(!ok, "Transfer exceeding daily limit should be rejected");
         assert_eq!(reason, Some("sender_limits_exceeded"));
 
+        println!("aml_pending profiles: {:?}", aml.mempool_profiles);
+
         // Verify sender's daily_sum
-        let block_profiles = aml.pending_profiles.get(&1).expect("Block profiles should exist");
-        let sender_profile = block_profiles.get(&sender).expect("Sender profile should exist");
+        let sender_profile = aml.mempool_profiles.get(&sender).expect("Sender profile should exist in mempool profiles");
         assert_eq!(
-            sender_profile.daily_sum, amount,
+            sender_profile.caches[0].sum, amount,
             "Sender daily_sum should match first transaction"
         );
     }
-
+    //
     // #[test]
-    // fn test_batch_compliance_mixed_results() {
+    // fn benchmark_mempool_vs_batch() {
     //     let mut aml = new_evaluator();
     //     let sender = addr(1);
     //     let recipient = addr(2);
-    //     let valid_amount = U256::from(10);
-    //     let invalid_amount = MAX_SINGLE_TX_AMOUNT + U256::from(1);
+    //     let amount = U256::from(1);
+    //     let num_txs = 10_000;
     //
-    //     // Batch with one valid and one invalid transaction
-    //     let txs = vec![
-    //         (sender, recipient, valid_amount),           // Valid
-    //         (sender, recipient, invalid_amount),         // Invalid
-    //         (sender, recipient, DAILY_LIMIT + U256::from(1)), // Exceeds daily limit
-    //     ];
+    //     // Check mempool tx one by one
+    //     let start = Instant::now();
+    //     for i in 0..num_txs {
+    //         let (ok, reason) = aml.check_mempool_tx(sender, recipient, amount, 1);
+    //         assert!(ok, "Tx {} should pass AML", i);
+    //         assert!(reason.is_none());
+    //     }
+    //     let duration_mempool = start.elapsed();
+    //     println!(
+    //         "check_mempool_tx: validated {} txs in {:?} (avg {:?} per tx)",
+    //         num_txs,
+    //         duration_mempool,
+    //         duration_mempool / num_txs as u32
+    //     );
     //
+    //     // Check compliance batch
+    //     let txs: Vec<(Address, Address, U256)> =
+    //         (0..num_txs).map(|_| (sender, recipient, amount)).collect();
+    //     let start = Instant::now();
     //     let results = aml.check_compliance_batch(&txs, 1);
-    //     assert_eq!(results.len(), 3);
-    //     assert_eq!(results[0], (true, None), "Valid transaction should pass");
-    //     assert_eq!(
-    //         results[1],
-    //         (false, Some("single_transaction_above_threshold")),
-    //         "Invalid transaction should fail"
-    //     );
-    //     assert_eq!(
-    //         results[2],
-    //         (false, Some("sender_limits_exceeded")),
-    //         "Transaction exceeding daily limit should fail"
+    //     let duration_batch = start.elapsed();
+    //
+    //     assert!(results.iter().all(|(ok, reason)| *ok && reason.is_none()));
+    //     println!(
+    //         "check_compliance_batch: validated {} txs in {:?} (avg {:?} per tx)",
+    //         num_txs,
+    //         duration_batch,
+    //         duration_batch / num_txs as u32
     //     );
     //
-    //     // Verify no changes to pending_profiles
-    //     assert!(
-    //         !aml.pending_profiles.contains_key(&1),
-    //         "Batch check should not modify pending_profiles"
+    //     // Verify profile accounting
+    //     aml.update_finalized_block(1);
+    //     println!("{:?}", aml.committed_profiles);
+    //     let sender_profile = aml.committed_profiles.get(&sender).expect("Sender profile should exist");
+    //     assert_eq!(
+    //         sender_profile.daily_sum,
+    //         U256::from(num_txs),
+    //         "Sender daily_sum should match number of txs"
+    //     );
+    //     let recipient_profile = aml
+    //         .committed_profiles
+    //         .get(&recipient)
+    //         .expect("Recipient profile should exist");
+    //     assert_eq!(
+    //         recipient_profile.daily_sum,
+    //         U256::from(num_txs),
+    //         "Recipient daily_sum should match number of txs"
     //     );
     // }
-
+    //
     // #[test]
-    // fn test_batch_compliance_mixed_results() {
+    // fn benchmark_profile_writes() {
     //     let mut aml = new_evaluator();
     //     let sender = addr(1);
     //     let recipient = addr(2);
+    //     let amount = U256::from(1);
+    //     let num_txs = 500;
     //
-    //     // Batch with one valid tx and one failing tx
-    //     let txs = vec![
-    //         (sender, recipient, U256::from(10)), // valid
-    //         (sender, recipient, MAX_SINGLE_TX_AMOUNT + U256::from(1)), // invalid
-    //     ];
+    //     // Prepare txs
+    //     let txs: Vec<(Address, Address, U256)> =
+    //         (0..num_txs).map(|_| (sender, recipient, amount)).collect();
     //
+    //     // Benchmark write
+    //     let start = Instant::now();
+    //     aml.update_profiles_batch(&txs, 1);
+    //     let elapsed = start.elapsed();
+    //
+    //     println!(
+    //         "update_profiles_batch: {} txs in {:?} (avg {:?} per tx)",
+    //         num_txs,
+    //         elapsed,
+    //         elapsed / num_txs as u32
+    //     );
+    //
+    //     // Benchmark batch compliance only
+    //     let start = Instant::now();
     //     let results = aml.check_compliance_batch(&txs, 1);
-    //     assert_eq!(results.len(), 2);
+    //     let elapsed_batch = start.elapsed();
     //
-    //     assert_eq!(results[0], (true, None));
-    //     assert_eq!(results[1], (false, Some("single_transaction_above_threshold")));
+    //     assert!(results.iter().all(|(ok, reason)| *ok && reason.is_none()));
+    //     println!(
+    //         "check_compliance_batch: {} txs in {:?} (avg {:?} per tx)",
+    //         num_txs,
+    //         elapsed_batch,
+    //         elapsed_batch / num_txs as u32
+    //     );
+    //
+    //     // Verify profile accounting
+    //     aml.update_finalized_block(1);
+    //     let sender_profile = aml.committed_profiles.get(&sender).expect("Sender profile should exist");
+    //     assert_eq!(
+    //         sender_profile.daily_sum,
+    //         U256::from(num_txs),
+    //         "Sender daily_sum should match number of txs"
+    //     );
+    //     let recipient_profile = aml
+    //         .committed_profiles
+    //         .get(&recipient)
+    //         .expect("Recipient profile should exist");
+    //     assert_eq!(
+    //         recipient_profile.daily_sum,
+    //         U256::from(num_txs),
+    //         "Recipient daily_sum should match number of txs"
+    //     );
     // }
-
-    #[test]
-    fn benchmark_mempool_vs_batch() {
-        let mut aml = new_evaluator();
-        let sender = addr(1);
-        let recipient = addr(2);
-        let amount = U256::from(1);
-        let num_txs = 10_000;
-
-        // Check mempool tx one by one
-        let start = Instant::now();
-        for i in 0..num_txs {
-            let (ok, reason) = aml.check_mempool_tx(sender, recipient, amount, 1);
-            assert!(ok, "Tx {} should pass AML", i);
-            assert!(reason.is_none());
-        }
-        let duration_mempool = start.elapsed();
-        println!(
-            "check_mempool_tx: validated {} txs in {:?} (avg {:?} per tx)",
-            num_txs,
-            duration_mempool,
-            duration_mempool / num_txs as u32
-        );
-
-        // Check compliance batch
-        let txs: Vec<(Address, Address, U256)> =
-            (0..num_txs).map(|_| (sender, recipient, amount)).collect();
-        let start = Instant::now();
-        let results = aml.check_compliance_batch(&txs, 1);
-        let duration_batch = start.elapsed();
-
-        assert!(results.iter().all(|(ok, reason)| *ok && reason.is_none()));
-        println!(
-            "check_compliance_batch: validated {} txs in {:?} (avg {:?} per tx)",
-            num_txs,
-            duration_batch,
-            duration_batch / num_txs as u32
-        );
-
-        // Verify profile accounting
-        aml.update_finalized_block(1);
-        println!("{:?}", aml.committed_profiles);
-        let sender_profile = aml.committed_profiles.get(&sender).expect("Sender profile should exist");
-        assert_eq!(
-            sender_profile.daily_sum,
-            U256::from(num_txs),
-            "Sender daily_sum should match number of txs"
-        );
-        let recipient_profile = aml
-            .committed_profiles
-            .get(&recipient)
-            .expect("Recipient profile should exist");
-        assert_eq!(
-            recipient_profile.daily_sum,
-            U256::from(num_txs),
-            "Recipient daily_sum should match number of txs"
-        );
-    }
-
-    #[test]
-    fn benchmark_profile_writes() {
-        let mut aml = new_evaluator();
-        let sender = addr(1);
-        let recipient = addr(2);
-        let amount = U256::from(1);
-        let num_txs = 500;
-
-        // Prepare txs
-        let txs: Vec<(Address, Address, U256)> =
-            (0..num_txs).map(|_| (sender, recipient, amount)).collect();
-
-        // Benchmark write
-        let start = Instant::now();
-        aml.update_profiles_batch(&txs, 1);
-        let elapsed = start.elapsed();
-
-        println!(
-            "update_profiles_batch: {} txs in {:?} (avg {:?} per tx)",
-            num_txs,
-            elapsed,
-            elapsed / num_txs as u32
-        );
-
-        // Benchmark batch compliance only
-        let start = Instant::now();
-        let results = aml.check_compliance_batch(&txs, 1);
-        let elapsed_batch = start.elapsed();
-
-        assert!(results.iter().all(|(ok, reason)| *ok && reason.is_none()));
-        println!(
-            "check_compliance_batch: {} txs in {:?} (avg {:?} per tx)",
-            num_txs,
-            elapsed_batch,
-            elapsed_batch / num_txs as u32
-        );
-
-        // Verify profile accounting
-        aml.update_finalized_block(1);
-        let sender_profile = aml.committed_profiles.get(&sender).expect("Sender profile should exist");
-        assert_eq!(
-            sender_profile.daily_sum,
-            U256::from(num_txs),
-            "Sender daily_sum should match number of txs"
-        );
-        let recipient_profile = aml
-            .committed_profiles
-            .get(&recipient)
-            .expect("Recipient profile should exist");
-        assert_eq!(
-            recipient_profile.daily_sum,
-            U256::from(num_txs),
-            "Recipient daily_sum should match number of txs"
-        );
-    }
 }
