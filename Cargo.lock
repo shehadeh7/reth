@@ -8397,6 +8397,8 @@ dependencies = [
  "alloy-eips",
  "alloy-primitives",
  "alloy-rpc-types-engine",
+ "alloy-sol-types",
+ "aml-engine",
  "reth-basic-payload-builder",
  "reth-chainspec",
  "reth-errors",

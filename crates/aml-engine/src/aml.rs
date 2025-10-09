@@ -46,7 +46,7 @@ pub static AML_EVALUATOR: OnceLock<RwLock<AmlEvaluator>> = OnceLock::new();
 
 pub struct AmlEvaluator {
     db: AmlDb,
-    committed_profiles: HashMap<Address, AccountProfile>,
+    committed_profiles: HashMap<Address, AccountProfile>, // finalized profiles in db
     pending_profiles: HashMap<u64, HashMap<Address, AccountProfile>>,
     mempool_profiles: HashMap<Address, AccountProfile>,
     finalized_block: u64,
@@ -329,14 +329,8 @@ impl AmlEvaluator {
     pub fn handle_reorg(&mut self, reverted_block: u64) {
         if let Some(block_profiles) = self.pending_profiles.remove(&reverted_block) {
             for (addr, mut profile) in block_profiles {
+                // Remove the block from the profile's metrics
                 profile.metrics.remove(&reverted_block);
-                profile.prune_old(self.finalized_block, WINDOWS);
-                if !profile.metrics.is_empty() {
-                    self.committed_profiles.insert(addr, profile);
-                } else {
-                    self.committed_profiles.remove(&addr);
-                    self.db.delete_profile(&addr);
-                }
             }
         }
     }

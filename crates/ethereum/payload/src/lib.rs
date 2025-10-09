@@ -10,7 +10,7 @@
 #![allow(clippy::useless_let_if_seq)]
 
 use alloy_consensus::Transaction;
-use alloy_primitives::U256;
+use alloy_primitives::{hex, Selector, U256};
 use reth_basic_payload_builder::{
     is_better_payload, BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder,
     PayloadConfig,
@@ -36,10 +36,15 @@ use reth_transaction_pool::{
 };
 use revm::context_interface::Block as _;
 use std::sync::Arc;
+use alloy_sol_types::{sol, SolCall};
 use tracing::{debug, trace, warn};
+use aml_engine::aml::AML_EVALUATOR;
 
 mod config;
 pub use config::*;
+sol! {
+    function transfer(address to, uint256 amount);
+}
 
 pub mod validator;
 pub use validator::EthereumExecutionPayloadValidator;
@@ -198,6 +203,16 @@ where
     let max_blob_count =
         blob_params.as_ref().map(|params| params.max_blob_count).unwrap_or_default();
 
+    // Block number used for new block
+    let block_number = builder.evm_mut().block().number.try_into().unwrap_or_default();
+
+
+    let mut aml_evaluator = AML_EVALUATOR
+        .get()
+        .expect("AML_EVALUATOR not initialized")
+        .write()
+        .expect("poisoned lock");
+
     while let Some(pool_tx) = best_txs.next() {
         // ensure we still have capacity for this transaction
         if cumulative_gas_used + pool_tx.gas_limit() > block_gas_limit {
@@ -306,6 +321,32 @@ where
                 best_txs.skip_blobs();
             }
         }
+
+        // TODO: (ms) This is the code for handling AML
+        // TODO: (ms) handle updating AML profile here
+        // if not compliant, return some new insert error
+        // to is the contract address
+        if pool_tx.transaction.function_selector() == Some(&Selector::from(hex!("a9059cbb"))) {
+            if let Ok(decoded) = transferCall::abi_decode(&pool_tx.transaction.input()) {
+                let sender = pool_tx.sender();
+                let recipient = decoded.to;
+                let amount = decoded.amount;
+
+                let (status, reason) = aml_evaluator.check_mempool_tx(sender, recipient, amount, block_number);
+
+                if !status {
+                    print!("Blocked by AML: {:?}", reason);
+                    best_txs.mark_invalid(
+                        &pool_tx,
+                        InvalidPoolTransactionError::AMLRulesFailed,
+                    );
+                } else {
+                    println!("AML passed ✅");
+                }
+            }
+        }
+
+
 
         // update and add to total fees
         let miner_fee =

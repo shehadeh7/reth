@@ -52,6 +52,7 @@ use tokio::sync::{
     oneshot::{self, error::TryRecvError},
 };
 use tracing::*;
+use aml_engine::aml::AML_EVALUATOR;
 
 mod block_buffer;
 mod cached_state;
@@ -2354,7 +2355,6 @@ where
         if finalized_block_hash.is_zero() {
             return Ok(())
         }
-
         match self.find_canonical_header(finalized_block_hash) {
             Ok(None) => {
                 debug!(target: "engine::tree", "Finalized block not found in canonical chain");
@@ -2368,6 +2368,13 @@ where
                     // we're also persisting the finalized block on disk so we can reload it on
                     // restart this is required by optimism which queries the finalized block: <https://github.com/ethereum-optimism/optimism/blob/c383eb880f307caa3ca41010ec10f30f08396b2e/op-node/rollup/sync/start.go#L65-L65>
                     let _ = self.persistence.save_finalized_block_number(finalized.number());
+                    let mut aml_evaluator = AML_EVALUATOR
+                        .get()
+                        .expect("AML_EVALUATOR not initialized")
+                        .write()
+                        .expect("poisoned lock");
+                    aml_evaluator.update_finalized_block(finalized.number());
+                    println!("saving finalzied block inside tree");
                     self.canonical_in_memory_state.set_finalized(finalized);
                 }
             }
@@ -2384,7 +2391,6 @@ where
         if safe_block_hash.is_zero() {
             return Ok(())
         }
-
         match self.find_canonical_header(safe_block_hash) {
             Ok(None) => {
                 debug!(target: "engine::tree", "Safe block not found in canonical chain");
@@ -2397,6 +2403,7 @@ where
                     // restart this is required by optimism which queries the safe block: <https://github.com/ethereum-optimism/optimism/blob/c383eb880f307caa3ca41010ec10f30f08396b2e/op-node/rollup/sync/start.go#L65-L65>
                     let _ = self.persistence.save_safe_block_number(safe.number());
                     self.canonical_in_memory_state.set_safe(safe);
+                    println!("saving safe block inside tree");
                 }
             }
             Err(err) => {

@@ -32,11 +32,6 @@ use std::{
     sync::Arc,
 };
 use tracing::trace;
-use aml_engine::aml::AML_EVALUATOR;
-use alloy_sol_types::{sol, SolCall};
-sol! {
-    function transfer(address to, uint256 amount);
-}
 
 #[cfg_attr(doc, aquamarine::aquamarine)]
 // TODO: Inlined diagram due to a bug in aquamarine library, should become an include when it's
@@ -1879,41 +1874,11 @@ impl<T: PoolTransaction> AllTransactions<T> {
             cumulative_cost,
         };
 
-        let mut aml_evaluator = AML_EVALUATOR
-            .get()
-            .expect("AML_EVALUATOR not initialized")
-            .write()
-            .expect("poisoned lock");
-
-        // TODO: (ms) ensure that if a transaction nonce is the same as one that already exists, dont modify the profile?
-        // TODO: (ms) add single transaction check back here. Move the code into fn for checking
-        let upcoming_block_number = self.last_seen_block_number + 1;
 
         // try to insert the transaction
         match self.txs.entry(*transaction.id()) {
             Entry::Vacant(entry) => {
                 // Insert the transaction in both maps
-                // TODO: (ms) handle updating AML profile here
-                // if not compliant, return some new insert error
-                // to is the contract address
-                if transaction.transaction.function_selector() == Some(&Selector::from(hex!("a9059cbb"))) {
-                    if let Ok(decoded) = transferCall::abi_decode(&transaction.transaction.input()) {
-                        let sender = transaction.sender();
-                        let recipient = decoded.to;
-                        let amount = decoded.amount;
-
-                        let (status, reason) = aml_evaluator.check_mempool_tx(sender, recipient, amount, upcoming_block_number);
-
-                        if !status {
-                            print!("Blocked by AML: {:?}", reason);
-                            return Err(InsertErr::AMLRulesFailed {
-                                transaction: pool_tx.transaction,
-                            });
-                        } else {
-                            println!("AML passed ✅");
-                        }
-                    }
-                }
                 self.by_hash.insert(*pool_tx.transaction.hash(), pool_tx.transaction.clone());
                 entry.insert(pool_tx);
             }
@@ -1928,46 +1893,6 @@ impl<T: PoolTransaction> AllTransactions<T> {
                         transaction: pool_tx.transaction,
                         existing: *entry.get().transaction.hash(),
                     })
-                }
-
-                // Revert prior ERC20 tx
-                if existing_transaction.transaction.function_selector() == Some(&Selector::from(hex!("a9059cbb"))) {
-                    if let Ok(decoded) = transferCall::abi_decode(&existing_transaction.transaction.input()) {
-                        aml_evaluator.revert_mempool_tx(
-                            existing_transaction.transaction.sender(),
-                            decoded.to,
-                            decoded.amount,
-                            upcoming_block_number,
-                        );
-                    }
-                }
-
-                // Check if incoming replacement transaction is an ERC20 transaction
-                let is_transfer = transaction.transaction.function_selector() == Some(&Selector::from(hex!("a9059cbb")));
-                if is_transfer {
-                    if let Ok(decoded) = transferCall::abi_decode(&transaction.transaction.input()) {
-                        let sender = transaction.sender();
-                        let recipient = decoded.to;
-                        let amount = decoded.amount;
-
-
-                        let (status, reason) = aml_evaluator.check_mempool_tx(sender, recipient, amount, upcoming_block_number);
-                        if !status {
-                            // Reinstate the old tx and profiles
-                            if let Ok(old_decoded) = transferCall::abi_decode(&existing_transaction.transaction.input()) {
-                                aml_evaluator.check_mempool_tx(
-                                    existing_transaction.transaction.sender(),
-                                    old_decoded.to,
-                                    old_decoded.amount,
-                                    upcoming_block_number,
-                                );
-                            }
-
-                            return Err(InsertErr::AMLRulesFailed {
-                                transaction: pool_tx.transaction,
-                            });
-                        }
-                    }
                 }
 
                 let new_hash = *pool_tx.transaction.hash();
