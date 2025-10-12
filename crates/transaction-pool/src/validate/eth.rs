@@ -269,7 +269,6 @@ where
         transaction: Tx,
         maybe_state: &mut Option<Box<dyn AccountInfoReader>>,
     ) -> TransactionValidationOutcome<Tx> {
-        println!("calling validate one with provider");
         match self.validate_one_no_state(origin, transaction) {
             Ok(transaction) => {
                 // stateless checks passed, pass transaction down stateful validation pipeline

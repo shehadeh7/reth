@@ -519,7 +519,6 @@ impl FinalizedBlockTracker {
             .replace(finalized)
             .is_none_or(|last| last < finalized)
             .then_some(finalized)
-        // TODO (ms): If this is where finalized block update occurs, update AML profile here?
     }
 }
 

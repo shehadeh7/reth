@@ -158,13 +158,6 @@ impl AccountProfile {
                 let projected_unique_out = self.unique_range(start, self.last_update_block, false) +
                     if !self.is_unique_in_range(new_recipient, start, self.last_update_block, false) { 1 } else { 0 };
 
-                println!("Is sender");
-                println!("projected_sum {:?}, projected_count {:?}, projkected_unique_out {:?}", projected_sum, projected_count, projected_unique_out);
-                println!("sum_limits {:?}", sum_limits);
-                println!("unique_out {:?}", unique_out_limits);
-                println!("unique_in_lit {:?}", unique_in_limits);
-                println!("count_limits {:?}", count_limits);
-
                 if projected_sum > sum_limits[i] ||
                     projected_count > count_limits[i] ||
                     projected_unique_out > unique_out_limits[i] {
@@ -175,13 +168,6 @@ impl AccountProfile {
                 let projected_inbound_sum = self.sum_range(start, self.last_update_block, true) + new_amount;
                 let projected_unique_in = self.unique_range(start, self.last_update_block, true) +
                     if !self.is_unique_in_range(new_sender, start, self.last_update_block, true) { 1 } else { 0 };
-
-                println!("Is receiver");
-                println!("projected_inbound_sum {:?}, projected_unique_in {:?}, ", projected_inbound_sum, projected_unique_in);
-                println!("sum_limits {:?}", sum_limits);
-                println!("unique_out {:?}", unique_out_limits);
-                println!("unique_in_lit {:?}", unique_in_limits);
-                println!("count_limits {:?}", count_limits);
 
                 if projected_inbound_sum > inbound_sum_limits[i] ||
                     projected_unique_in > unique_in_limits[i] {

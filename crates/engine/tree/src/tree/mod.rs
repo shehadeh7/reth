@@ -2374,7 +2374,6 @@ where
                         .write()
                         .expect("poisoned lock");
                     aml_evaluator.update_finalized_block(finalized.number());
-                    println!("saving finalzied block inside tree");
                     self.canonical_in_memory_state.set_finalized(finalized);
                 }
             }
@@ -2403,7 +2402,6 @@ where
                     // restart this is required by optimism which queries the safe block: <https://github.com/ethereum-optimism/optimism/blob/c383eb880f307caa3ca41010ec10f30f08396b2e/op-node/rollup/sync/start.go#L65-L65>
                     let _ = self.persistence.save_safe_block_number(safe.number());
                     self.canonical_in_memory_state.set_safe(safe);
-                    println!("saving safe block inside tree");
                 }
             }
             Err(err) => {
