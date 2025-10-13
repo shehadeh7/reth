@@ -645,10 +645,10 @@ where
         }
 
         // TODO: (ms) Add the AML profile consensus rule check here
-        let aml_evaluator = AML_EVALUATOR
+        let mut aml_evaluator = AML_EVALUATOR
             .get()
             .expect("AML_EVALUATOR not initialized")
-            .read()
+            .write()
             .expect("poisoned lock");
 
         let transactions = block.clone_transactions_recovered().collect::<Vec<_>>();
