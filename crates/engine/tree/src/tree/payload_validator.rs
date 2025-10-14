@@ -653,6 +653,7 @@ where
 
         let transactions = block.clone_transactions_recovered().collect::<Vec<_>>();
         // TODO: (ms) if transaction didn't execute successfully, dont update the AML profile
+        // Assumption is that validation is done before block is even executed (Optimistic)
         // Collect AML-relevant tx info with their original indexes
         let aml_txs: Vec<(usize, Address, Address, U256)> = transactions
             .iter()

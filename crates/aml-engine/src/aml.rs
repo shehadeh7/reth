@@ -137,10 +137,10 @@ impl AmlEvaluator {
             if let Some(block_deltas) = self.pending_deltas.get(&b) {
                 if let Some(delta) = block_deltas.get(&addr) {
                     profile.metrics.insert(b, delta.clone());
-                    profile.prune_old(block_number.saturating_sub(1), WINDOWS);
                 }
             }
         }
+        profile.prune_old(block_number.saturating_sub(1), WINDOWS);
 
         // Ensure last_update_block is current
         if profile.last_update_block < block_number.saturating_sub(1) {
@@ -177,9 +177,6 @@ impl AmlEvaluator {
         let mut recipient_profile = self.mempool_profiles.get(&recipient).cloned()
             .unwrap_or_else(|| self.fetch_profile(recipient, block_number));
 
-        println!("sender profile: {:?}", sender_profile);
-        println!("recipient profile: {:?}", recipient_profile);
-
         let reason = Self::check_compliance_internal(&sender_profile, &recipient_profile, amount, block_number);
 
         if reason.is_none() {
@@ -189,8 +186,6 @@ impl AmlEvaluator {
             self.mempool_profiles.insert(sender, sender_profile);
             self.mempool_profiles.insert(recipient, recipient_profile);
         }
-
-        println!("Mempool profiles after check_mempool_tx {:?}", self.mempool_profiles);
 
         (reason.is_none(), reason)
     }
@@ -247,8 +242,11 @@ impl AmlEvaluator {
         block_number: u64,
     ) {
 
-        // block number isn't known yet, this just reutns an empty map every time
-        //
+        if updates.is_empty() {
+            return;
+        }
+
+        // block number isn't known yet, this just returns an empty map every time
         let mut block_deltas = self
             .pending_deltas
             .remove(&block_number)
@@ -275,6 +273,9 @@ impl AmlEvaluator {
             }
             self.latest_profiles.insert(recipient, recipient_profile);
         }
+
+        // Put the updated block deltas back
+        self.pending_deltas.insert(block_number, block_deltas);
     }
 
     pub fn update_finalized_block(&mut self, new_finalized_block: u64) {
@@ -302,11 +303,9 @@ impl AmlEvaluator {
                 .unwrap_or_else(|| AccountProfile::new(*addr, self.finalized_block));
 
             // Apply finalized deltas up to new_finalized_block
-            for b in finalized_range.clone() {
-                if let Some(block_deltas) = finalized_deltas.get(&b) {
-                    if let Some(delta) = block_deltas.get(addr) {
-                        profile.metrics.insert(b, delta.clone());
-                    }
+            for (block_num, deltas) in finalized_deltas.iter() {
+                if let Some(delta) = deltas.get(addr) {
+                    profile.metrics.insert(*block_num, delta.clone());
                 }
             }
 
@@ -326,22 +325,25 @@ impl AmlEvaluator {
         self.finalized_block = new_finalized_block;
     }
 
-    pub fn handle_reorg(&mut self, reverted_block: u64) {
-        // Remove the reverted block's deltas and collect affected addresses
-        if let Some(block_deltas) = self.pending_deltas.remove(&reverted_block) {
-            let affected_addresses: Vec<Address> = block_deltas.keys().copied().collect();
-
-            // Revert metrics for affected addresses in latest_profiles
-            for addr in affected_addresses {
-                if let Some(mut profile) = self.latest_profiles.get(&addr).cloned() {
-                    // Remove the block's metrics
-                    profile.metrics.remove(&reverted_block);
-                    // Recompute window_states and update last_update_block
-                    // profile.prune_old(new_tip_block, WINDOWS);
-                    // Update latest_profiles
-                    self.latest_profiles.insert(addr, profile);
+    /// Assume reorgs never go past the finalized block
+    pub fn handle_reorg(
+        &mut self,
+        old_blocks: &[(u64, Vec<(Address, Address, U256)>)],
+        new_blocks: &[(u64, Vec<(Address, Address, U256)>)],
+    ) {
+        for block in old_blocks {
+            if let Some(block_deltas) = self.pending_deltas.remove(&block.0) {
+                for (addr, _) in block_deltas {
+                    if let Some(mut profile) = self.latest_profiles.get(&addr).cloned() {
+                        profile.metrics.remove(&block.0);
+                        self.latest_profiles.insert(addr, profile);
+                    }
                 }
             }
+        }
+
+        for block in new_blocks {
+            self.update_profiles_batch(&block.1, block.0);
         }
     }
 }
@@ -366,6 +368,54 @@ mod tests {
     }
 
     #[test]
+    fn test_mempool_tx_basic() {
+        let mut evaluator = new_evaluator();
+
+        let sender = addr(1);
+        let recipient = addr(2);
+        let amount = U256::from(100);
+        let block_number = 1;
+
+        // --- compliant transaction ---
+        let (ok, reason) = evaluator.check_mempool_tx(sender, recipient, amount, block_number);
+
+        assert!(ok, "Transaction should be compliant");
+        assert!(reason.is_none(), "No reason for rejection");
+
+        // Profiles should now exist in mempool_profiles
+        assert!(evaluator.mempool_profiles.contains_key(&sender));
+        assert!(evaluator.mempool_profiles.contains_key(&recipient));
+
+        let sender_profile = evaluator.mempool_profiles.get(&sender).unwrap();
+        let recipient_profile = evaluator.mempool_profiles.get(&recipient).unwrap();
+
+        assert_eq!(sender_profile.metrics.get(&block_number).unwrap().spend_amount, amount);
+        assert_eq!(recipient_profile.metrics.get(&block_number).unwrap().receive_amount, amount);
+
+        // --- self-transfer ---
+        let (ok, reason) = evaluator.check_mempool_tx(sender, sender, U256::from(50), block_number);
+        assert!(ok);
+        assert!(reason.is_none(), "Self-transfer should be no-op");
+
+        // --- block number change resets mempool ---
+        let new_block_number = 2;
+        let sender2 = addr(3);
+        let recipient2 = addr(4);
+        let amount2 = U256::from(200);
+
+        let (ok, reason) = evaluator.check_mempool_tx(sender2, recipient2, amount2, new_block_number);
+        assert!(ok);
+        assert!(reason.is_none());
+
+        // mempool_profiles should have been reset, only new addresses exist
+        assert_eq!(evaluator.mempool_profiles.len(), 2);
+        assert!(evaluator.mempool_profiles.contains_key(&sender2));
+        assert!(evaluator.mempool_profiles.contains_key(&recipient2));
+        assert!(!evaluator.mempool_profiles.contains_key(&sender));
+        assert!(!evaluator.mempool_profiles.contains_key(&recipient));
+    }
+
+    #[test]
     fn test_self_transfer_is_noop() {
         let mut aml = new_evaluator();
         let sender = addr(1);
@@ -374,6 +424,105 @@ mod tests {
         let (ok, reason) = aml.check_mempool_tx(sender, sender, amount, 1);
         assert!(ok, "Self-transfer should be allowed");
         assert!(reason.is_none(), "Self-transfer should not trigger AML checks");
+    }
+
+    #[test]
+    fn test_non_compliant_tx() {
+        let mut evaluator = new_evaluator();
+
+        let sender = addr(1);
+        let recipient = addr(2);
+        let amount = DAILY_LIMIT.saturating_add(U256::from(100));
+        let block_number = 1;
+
+        let (ok, reason) = evaluator.check_mempool_tx(sender, recipient, amount, block_number);
+
+        assert!(!ok, "Transaction should be rejected");
+        assert_eq!(reason, Some("sender_limits_exceeded"));
+
+        // mempool_profiles should not be updated
+        assert!(!evaluator.mempool_profiles.contains_key(&sender));
+        assert!(!evaluator.mempool_profiles.contains_key(&recipient));
+    }
+
+    #[test]
+    fn test_update_profiles_batch_basic() {
+        let mut evaluator = new_evaluator();
+
+        let sender = addr(1);
+        let recipient = addr(2);
+
+        let txs = vec![(sender, recipient, U256::from(100u64))];
+        let block_number = 42;
+
+        // Call the method
+        evaluator.update_profiles_batch(&txs, block_number);
+
+        // --- Check latest_profiles ---
+        let sender_profile = evaluator.latest_profiles.get(&sender).unwrap();
+        let recipient_profile = evaluator.latest_profiles.get(&recipient).unwrap();
+
+        assert!(sender_profile.metrics.contains_key(&block_number), "Sender metrics not updated");
+        assert!(recipient_profile.metrics.contains_key(&block_number), "Recipient metrics not updated");
+
+        let sender_metrics = sender_profile.metrics.get(&block_number).unwrap();
+        let recipient_metrics = recipient_profile.metrics.get(&block_number).unwrap();
+
+        // Assuming metrics have spend_amount and receive_amount
+        assert_eq!(sender_metrics.spend_amount, U256::from(100));
+        assert_eq!(recipient_metrics.receive_amount, U256::from(100));
+
+        // --- Check pending_deltas ---
+        let block_deltas = evaluator.pending_deltas.get(&block_number).unwrap();
+        assert!(block_deltas.contains_key(&sender));
+        assert!(block_deltas.contains_key(&recipient));
+    }
+
+    #[test]
+    fn test_update_profiles_batch_self_transfer_ignored() {
+        let mut evaluator = new_evaluator();
+        let addr = addr(1);
+
+        let txs = vec![(addr, addr, U256::from(50))];
+        let block_number = 10;
+
+        evaluator.update_profiles_batch(&txs, block_number);
+
+        // Should not insert self-transfer
+        assert!(evaluator.latest_profiles.get(&addr).is_none());
+        assert!(evaluator.pending_deltas.get(&block_number).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_update_profiles_batch_multiple_txs_same_block() {
+        let mut evaluator = new_evaluator();
+        let a = addr(1);
+        let b = addr(2);
+        let c = addr(3);
+
+        let txs = vec![
+            (a, b, U256::from(10)),
+            (b, c, U256::from(20)),
+        ];
+        let block_number = 5;
+
+        evaluator.update_profiles_batch(&txs, block_number);
+
+        // Check latest_profiles
+        let a_profile = evaluator.latest_profiles.get(&a).unwrap();
+        let b_profile = evaluator.latest_profiles.get(&b).unwrap();
+        let c_profile = evaluator.latest_profiles.get(&c).unwrap();
+
+        assert_eq!(a_profile.metrics.get(&block_number).unwrap().spend_amount, U256::from(10));
+        assert_eq!(b_profile.metrics.get(&block_number).unwrap().spend_amount, U256::from(20));
+        assert_eq!(b_profile.metrics.get(&block_number).unwrap().receive_amount, U256::from(10));
+        assert_eq!(c_profile.metrics.get(&block_number).unwrap().receive_amount, U256::from(20));
+
+        // Check pending_deltas
+        let block_deltas = evaluator.pending_deltas.get(&block_number).unwrap();
+        assert!(block_deltas.contains_key(&a));
+        assert!(block_deltas.contains_key(&b));
+        assert!(block_deltas.contains_key(&c));
     }
 
     // #[test]

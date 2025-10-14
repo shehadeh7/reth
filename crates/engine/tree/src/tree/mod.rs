@@ -5,9 +5,9 @@ use crate::{
     persistence::PersistenceHandle,
     tree::{error::InsertPayloadError, metrics::EngineApiMetrics, payload_validator::TreeCtx},
 };
-use alloy_consensus::BlockHeader;
+use alloy_consensus::{BlockHeader, Transaction, TxReceipt};
 use alloy_eips::{eip1898::BlockWithParent, merge::EPOCH_SLOTS, BlockNumHash, NumHash};
-use alloy_primitives::B256;
+use alloy_primitives::{hex, Selector, B256};
 use alloy_rpc_types_engine::{
     ForkchoiceState, PayloadStatus, PayloadStatusEnum, PayloadValidationError,
 };
@@ -28,7 +28,7 @@ use reth_payload_builder::PayloadBuilderHandle;
 use reth_payload_primitives::{
     BuiltPayload, EngineApiMessageVersion, NewPayloadError, PayloadBuilderAttributes, PayloadTypes,
 };
-use reth_primitives_traits::{Block, NodePrimitives, RecoveredBlock, SealedBlock, SealedHeader};
+use reth_primitives_traits::{Block, NodePrimitives, RecoveredBlock, SealedBlock, SealedHeader, SignedTransaction};
 use reth_provider::{
     providers::ConsistentDbView, BlockNumReader, BlockReader, DBProvider, DatabaseProviderFactory,
     HashedPostStateProvider, ProviderError, StateCommitmentProvider, StateProviderBox,
@@ -47,12 +47,17 @@ use std::{
     },
     time::Instant,
 };
+use alloy_evm::RecoveredTx;
 use tokio::sync::{
     mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
     oneshot::{self, error::TryRecvError},
 };
 use tracing::*;
 use aml_engine::aml::AML_EVALUATOR;
+use alloy_sol_types::{sol, SolCall};
+sol! {
+    function transfer(address to, uint256 amount);
+}
 
 mod block_buffer;
 mod cached_state;
@@ -1878,6 +1883,12 @@ where
             let old_first = old.first().map(|first| first.recovered_block().num_hash());
             trace!(target: "engine::tree", ?new_first, ?old_first, "Reorg detected, new and old first blocks");
 
+            let mut aml_evaluator = AML_EVALUATOR
+                .get()
+                .expect("AML_EVALUATOR not initialized")
+                .write()
+                .expect("poisoned lock");
+
             self.update_reorg_metrics(old.len());
             self.reinsert_reorged_blocks(new.clone());
             // Try reinserting the reorged canonical chain. This is only possible if we have
@@ -1898,6 +1909,50 @@ where
                     })
                 })
                 .collect::<Vec<_>>();
+
+            let mut old_blocks_updates = Vec::new();
+            let mut new_blocks_updates = Vec::new();
+
+            for block in &old {
+                let mut updates = Vec::new();
+                if let Some(receipts) = block.execution_output.receipts.get(0) {
+                    for (tx, receipt) in block.block.recovered_block.transactions_recovered().zip(receipts) {
+                        if !receipt.status() { continue; }
+
+                        let tx_recovered = tx.try_clone_into_recovered_unchecked().unwrap();
+                        if tx_recovered.inner().function_selector() != Some(&Selector::from(hex!("a9059cbb"))) {
+                            continue;
+                        }
+
+                        if let Ok(decoded) = transferCall::abi_decode(&tx_recovered.inner().input()) {
+                            updates.push((tx_recovered.signer(), decoded.to, decoded.amount));
+                        }
+                    }
+                }
+                old_blocks_updates.push((block.recovered_block().number(), updates));
+            }
+
+            for block in new.iter() {
+                let mut updates = Vec::new();
+                if let Some(receipts) =  block.execution_output.receipts.get(0) {
+                    for (tx, receipt) in block.block.recovered_block.transactions_recovered().zip(receipts) {
+                        if !receipt.status() { continue; }
+
+                        let tx_recovered = tx.try_clone_into_recovered_unchecked().unwrap();
+                        if tx_recovered.inner().function_selector() != Some(&Selector::from(hex!("a9059cbb"))) {
+                            continue;
+                        }
+
+                        if let Ok(decoded) = transferCall::abi_decode(&tx_recovered.inner().input()) {
+                            updates.push((tx_recovered.signer(), decoded.to, decoded.amount));
+                        }
+                    }
+                }
+                new_blocks_updates.push((block.recovered_block().number(), updates));
+            }
+
+            aml_evaluator.handle_reorg(&old_blocks_updates, &new_blocks_updates);
+
             self.reinsert_reorged_blocks(old);
         }
 

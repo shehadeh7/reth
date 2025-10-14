@@ -85,6 +85,7 @@ impl AccountProfile {
         entry.spend_amount += amount;
         entry.tx_count += 1;
         *entry.recipients.entry(recipient).or_insert(0) += 1;
+        // TODO: Check pruning should be removed from addition/removal and instead make whatever is calling this handle it
         self.prune_old(block_number, WINDOWS);
     }
 

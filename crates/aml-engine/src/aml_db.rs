@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 use alloy_primitives::{Address, FixedBytes, U256};
 use bincode::{Encode, Decode, config};
-use redb::{Database, TableDefinition};
+use redb::{Database, ReadableTable, TableDefinition};
 use crate::account_profile::{AccountProfile, BlockMetrics, WindowCache};
 
 #[derive(Debug, Clone, Encode, Decode)]
@@ -218,6 +218,26 @@ impl AmlDb {
         } else {
             None
         }
+    }
+
+    /// Load all profiles from DB (Intended for testing purposes)
+    pub fn load_all_profiles(&self) -> Vec<(Address, AccountProfileDb)> {
+        let txn = self.db.begin_read().unwrap();
+        let table = txn.open_table(self.profiles).unwrap();
+        let config = config::standard();
+
+        // Iterate over all key-value pairs
+        table.iter().unwrap()
+            .map(|entry| {
+                let (key, value) = entry.unwrap();
+                let addr = Address(key.value().try_into().unwrap());
+                let profile: AccountProfileDb =
+                    bincode::decode_from_slice::<AccountProfileDb, _>(&*value.value(), config)
+                        .unwrap()
+                        .0;
+                (addr, profile)
+            })
+            .collect()
     }
 
     pub fn delete_profile(&self, address: &Address) {
