@@ -659,7 +659,7 @@ where
             .iter()
             .enumerate()
             .filter_map(|(idx, tx)| {
-                if tx.inner().function_selector() == Some(&Selector::from(hex!("a9059cbb"))) {
+                if tx.inner().function_selector() != Some(&Selector::from(hex!("a9059cbb"))) {
                     return None;
                 }
                 // check if it has a particular function
