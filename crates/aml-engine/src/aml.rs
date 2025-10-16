@@ -74,8 +74,6 @@ impl AmlEvaluator {
         let sum_limits = vec![DAILY_LIMIT, WEEKLY_LIMIT, MONTHLY_LIMIT];  // daily/weekly/monthly outbound
         let inbound_sum_limits = vec![DAILY_LIMIT.saturating_add(DAILY_LIMIT), WEEKLY_LIMIT.saturating_add(WEEKLY_LIMIT), MONTHLY_LIMIT.saturating_add(MONTHLY_LIMIT)];  // inbound (unused for sender)
         let count_limits = vec![10u32, 20u32, 100u32];  // Adjusted higher
-        let unique_out_limits = vec![10usize, 20usize, 50usize];  // Adjusted higher
-        let unique_in_limits = vec![10usize, 20usize, 50usize];  // Adjusted higher
 
 
         if sender_profile.would_exceed_limits(
@@ -86,8 +84,6 @@ impl AmlEvaluator {
             &sum_limits,
             &inbound_sum_limits,
             &count_limits,
-            &unique_out_limits,
-            &unique_in_limits,
             true
         )  { return Some("sender_limits_exceeded") };
 
@@ -99,8 +95,6 @@ impl AmlEvaluator {
             &sum_limits,
             &inbound_sum_limits,
             &count_limits,
-            &unique_out_limits,
-            &unique_in_limits,
             false
         ) { return Some("recipient_limits_exceeded") }
 
@@ -275,7 +269,9 @@ impl AmlEvaluator {
         }
 
         // Put the updated block deltas back
-        self.pending_deltas.insert(block_number, block_deltas);
+        if !block_deltas.is_empty() {
+            self.pending_deltas.insert(block_number, block_deltas);
+        }
     }
 
     pub fn update_finalized_block(&mut self, new_finalized_block: u64) {

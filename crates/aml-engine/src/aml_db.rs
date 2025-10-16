@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap};
 use alloy_primitives::{Address, FixedBytes, U256};
 use bincode::{Encode, Decode, config};
 use redb::{Database, ReadableTable, TableDefinition};
@@ -24,9 +24,6 @@ pub struct BlockMetricsDb {
     pub spend_amount: SerializableU256,   // Outbound spend
     pub receive_amount: SerializableU256, // Inbound receive
     pub tx_count: u32,                    // Outbound count (velocity)
-    // Store maps as Vec<(addr, count)> for stable encoding
-    pub recipients: Vec<([u8; 20], u32)>, // Outbound fan-out (addr => count in block)
-    pub senders: Vec<([u8; 20], u32)>,    // Inbound fan-in  (addr => count in block)
 }
 
 
@@ -36,34 +33,16 @@ impl From<&BlockMetrics> for BlockMetricsDb {
             spend_amount: m.spend_amount.into(),
             receive_amount: m.receive_amount.into(),
             tx_count: m.tx_count,
-            recipients: m.recipients.iter()
-                .map(|(a, c)| (*a.0.as_ref(), *c))
-                .collect(),
-            senders: m.senders.iter()
-                .map(|(a, c)| (*a.0.as_ref(), *c))
-                .collect(),
         }
     }
 }
 
 impl From<BlockMetricsDb> for BlockMetrics {
     fn from(d: BlockMetricsDb) -> Self {
-        let recipients: HashMap<Address, u32> = d.recipients
-            .into_iter()
-            .map(|(b, c)| (Address(FixedBytes::from(b)), c))
-            .collect();
-
-        let senders: HashMap<Address, u32> = d.senders
-            .into_iter()
-            .map(|(b, c)| (Address(FixedBytes::from(b)), c))
-            .collect();
-
         Self {
             spend_amount: d.spend_amount.into(),
             receive_amount: d.receive_amount.into(),
             tx_count: d.tx_count,
-            recipients,
-            senders,
         }
     }
 }
@@ -74,8 +53,6 @@ pub struct WindowCacheDb {
     pub sum: SerializableU256,         // Outbound sum
     pub inbound_sum: SerializableU256, // Inbound sum
     pub count: u32,                    // Outbound count
-    pub unique_out: u32,               // Fan-out (avoid usize on disk)
-    pub unique_in: u32,                // Fan-in
 }
 
 impl From<&WindowCache> for WindowCacheDb {
@@ -84,8 +61,6 @@ impl From<&WindowCache> for WindowCacheDb {
             sum: w.sum.into(),
             inbound_sum: w.inbound_sum.into(),
             count: w.count,
-            unique_out: w.unique_out as u32,
-            unique_in: w.unique_in as u32,
         }
     }
 }
@@ -96,8 +71,6 @@ impl From<WindowCacheDb> for WindowCache {
             sum: d.sum.into(),
             inbound_sum: d.inbound_sum.into(),
             count: d.count,
-            unique_out: d.unique_out as usize,
-            unique_in: d.unique_in as usize,
         }
     }
 }
@@ -257,6 +230,7 @@ mod tests {
     use super::*;
     use alloy_primitives::{Address, U256};
     use std::collections::{BTreeMap, HashMap};
+    use std::time::Instant;
     use tempfile::tempdir;
 
     // Keep this in sync with your module’s const
@@ -280,33 +254,19 @@ mod tests {
         spend: u128,
         receive: u128,
         tx_count: u32,
-        recipients: &[(u8, u32)],
-        senders: &[(u8, u32)],
     ) -> BlockMetrics {
-        let mut r: HashMap<Address, u32> = HashMap::new();
-        let mut s: HashMap<Address, u32> = HashMap::new();
-        for (b, c) in recipients {
-            r.insert(addr(*b), *c);
-        }
-        for (b, c) in senders {
-            s.insert(addr(*b), *c);
-        }
         BlockMetrics {
             spend_amount: U256::from(spend),
             receive_amount: U256::from(receive),
             tx_count,
-            recipients: r,
-            senders: s,
         }
     }
 
-    fn mk_cache(sum: u128, inbound_sum: u128, count: u32, unique_out: u32, unique_in: u32) -> WindowCache {
+    fn mk_cache(sum: u128, inbound_sum: u128, count: u32) -> WindowCache {
         WindowCache {
             sum: U256::from(sum),
             inbound_sum: U256::from(inbound_sum),
             count,
-            unique_out: unique_out as usize,
-            unique_in: unique_in as usize,
         }
     }
 
@@ -326,16 +286,12 @@ mod tests {
         assert_u256_eq(a.spend_amount, b.spend_amount, "spend_amount");
         assert_u256_eq(a.receive_amount, b.receive_amount, "receive_amount");
         assert_eq!(a.tx_count, b.tx_count, "tx_count mismatch");
-        assert_maps_eq(&a.recipients, &b.recipients, "recipients");
-        assert_maps_eq(&a.senders, &b.senders, "senders");
     }
 
     fn assert_cache_eq(a: &WindowCache, b: &WindowCache) {
         assert_u256_eq(a.sum, b.sum, "cache.sum");
         assert_u256_eq(a.inbound_sum, b.inbound_sum, "cache.inbound_sum");
         assert_eq!(a.count, b.count, "cache.count mismatch");
-        assert_eq!(a.unique_out, b.unique_out, "cache.unique_out mismatch");
-        assert_eq!(a.unique_in, b.unique_in, "cache.unique_in mismatch");
     }
 
     fn assert_profile_eq(a: &AccountProfile, b: &AccountProfile) {
@@ -371,8 +327,6 @@ mod tests {
                 300_000,   // spend
                 100_000,   // receive
                 3,         // tx_count
-                &[(2, 2), (3, 1)], // recipients
-                &[(9, 3)],         // senders
             ),
         );
         metrics.insert(
@@ -381,18 +335,16 @@ mod tests {
                 210_100,
                 25_000,
                 1,
-                &[(4, 1)],
-                &[(8, 1)],
             ),
         );
 
         let caches = vec![
             // daily
-            mk_cache(300_000, 100_000, 3, 2, 1),
+            mk_cache(300_000, 100_000, 3),
             // weekly
-            mk_cache(510_100, 125_000, 4, 3, 2),
+            mk_cache(510_100, 125_000, 4),
             // monthly
-            mk_cache(510_100, 125_000, 4, 3, 2),
+            mk_cache(510_100, 125_000, 4),
         ];
 
         let profile = AccountProfile {
@@ -418,29 +370,29 @@ mod tests {
 
         // Profile 1
         let mut m1 = BTreeMap::new();
-        m1.insert(20_000_000u64, mk_block_metrics(111, 222, 1, &[(0xAA, 1)], &[(0xBB, 1)]));
+        m1.insert(20_000_000u64, mk_block_metrics(111, 222, 1));
         let p1 = AccountProfile {
             address: addr(1),
             metrics: m1,
             caches: vec![
-                mk_cache(111, 222, 1, 1, 1),
-                mk_cache(111, 222, 1, 1, 1),
-                mk_cache(111, 222, 1, 1, 1),
+                mk_cache(111, 222, 1),
+                mk_cache(111, 222, 1),
+                mk_cache(111, 222, 1),
             ],
             last_update_block: 20_000_000,
         };
 
         // Profile 2
         let mut m2 = BTreeMap::new();
-        m2.insert(19_123_456u64, mk_block_metrics(999_999, 0, 2, &[(0x01, 2)], &[]));
-        m2.insert(19_123_999u64, mk_block_metrics(1, 2, 1, &[(0x02, 1)], &[(0x03, 1)]));
+        m2.insert(19_123_456u64, mk_block_metrics(999_999, 0, 2));
+        m2.insert(19_123_999u64, mk_block_metrics(1, 2, 1));
         let p2 = AccountProfile {
             address: addr(2),
             metrics: m2,
             caches: vec![
-                mk_cache(1, 2, 1, 1, 1),
-                mk_cache(1_000_000, 2, 3, 2, 1),
-                mk_cache(1_000_000, 2, 3, 2, 1),
+                mk_cache(1, 2, 1),
+                mk_cache(1_000_000, 2, 3),
+                mk_cache(1_000_000, 2, 3),
             ],
             last_update_block: 19_124_000,
         };
@@ -460,6 +412,72 @@ mod tests {
     }
 
     #[test]
+    fn test_save_profiles_batch_roundtrip_timed() {
+        let (db, _tmp) = new_db();
+
+        // Profile 1
+        let mut m1 = BTreeMap::new();
+        m1.insert(20_000_000u64, mk_block_metrics(111, 222, 1));
+        let p1 = AccountProfile {
+            address: addr(1),
+            metrics: m1,
+            caches: vec![
+                mk_cache(111, 222, 1),
+                mk_cache(111, 222, 1),
+                mk_cache(111, 222, 1),
+            ],
+            last_update_block: 20_000_000,
+        };
+
+        // Profile 2
+        let mut m2 = BTreeMap::new();
+        m2.insert(19_123_456u64, mk_block_metrics(999_999, 0, 2));
+        m2.insert(19_123_999u64, mk_block_metrics(1, 2, 1));
+        let p2 = AccountProfile {
+            address: addr(2),
+            metrics: m2,
+            caches: vec![
+                mk_cache(1, 2, 1),
+                mk_cache(1_000_000, 2, 3),
+                mk_cache(1_000_000, 2, 3),
+            ],
+            last_update_block: 19_124_000,
+        };
+
+        let d1: AccountProfileDb = (&p1).into();
+        let d2: AccountProfileDb = (&p2).into();
+
+        // --- measure batch write ---
+        let start_write = Instant::now();
+        db.save_profiles_batch(&[d1.clone(), d2.clone()]);
+        let write_duration = start_write.elapsed();
+        println!("DB batch write took {:?}", write_duration);
+
+        // --- measure individual reads ---
+        let start_read1 = Instant::now();
+        let l1: AccountProfile = db.load_profile(&addr(1)).unwrap().into();
+        let read1 = start_read1.elapsed();
+
+        let start_read2 = Instant::now();
+        let l2: AccountProfile = db.load_profile(&addr(2)).unwrap().into();
+        let read2 = start_read2.elapsed();
+
+        println!("DB read (profile 1) took {:?}", read1);
+        println!("DB read (profile 2) took {:?}", read2);
+
+        assert_profile_eq(&p1, &l1);
+        assert_profile_eq(&p2, &l2);
+
+        println!(
+            "Summary: total = {:?} (write: {:?}, read1: {:?}, read2: {:?})",
+            write_duration + read1 + read2,
+            write_duration,
+            read1,
+            read2
+        );
+    }
+
+    #[test]
     fn test_blockmetrics_maps_roundtrip() {
         let (db, _tmp) = new_db();
 
@@ -470,8 +488,6 @@ mod tests {
                 1_234_567,
                 765_432,
                 5,
-                &[(0x10, 1), (0x11, 2), (0x12, 2)],
-                &[(0xA0, 3), (0xA1, 1), (0xA2, 1)],
             ),
         );
 
@@ -479,9 +495,9 @@ mod tests {
             address: addr(0xFF),
             metrics,
             caches: vec![
-                mk_cache(1_234_567, 765_432, 5, 3, 3),
-                mk_cache(1_234_567, 765_432, 5, 3, 3),
-                mk_cache(1_234_567, 765_432, 5, 3, 3),
+                mk_cache(1_234_567, 765_432, 5),
+                mk_cache(1_234_567, 765_432, 5),
+                mk_cache(1_234_567, 765_432, 5),
             ],
             last_update_block: 77,
         };
@@ -495,8 +511,6 @@ mod tests {
 
         // Extra checks on maps
         let bm = loaded.metrics.get(&77).unwrap();
-        assert_eq!(bm.recipients.get(&addr(0x11)).copied(), Some(2));
-        assert_eq!(bm.senders.get(&addr(0xA2)).copied(), Some(1));
     }
 
     #[test]
@@ -504,14 +518,14 @@ mod tests {
         let (db, _tmp) = new_db();
 
         let mut metrics = BTreeMap::new();
-        metrics.insert(123u64, mk_block_metrics(42, 0, 1, &[(0x01,1)], &[]));
+        metrics.insert(123u64, mk_block_metrics(42, 0, 1));
         let profile = AccountProfile {
             address: addr(7),
             metrics,
             caches: vec![
-                mk_cache(42, 0, 1, 1, 0),
-                mk_cache(42, 0, 1, 1, 0),
-                mk_cache(42, 0, 1, 1, 0),
+                mk_cache(42, 0, 1),
+                mk_cache(42, 0, 1),
+                mk_cache(42, 0, 1),
             ],
             last_update_block: 123,
         };
