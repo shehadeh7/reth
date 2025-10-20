@@ -948,6 +948,7 @@ dependencies = [
  "bitflags 2.9.1",
  "codspeed-criterion-compat",
  "futures-util",
+ "log",
  "metrics",
  "parking_lot",
  "paste",

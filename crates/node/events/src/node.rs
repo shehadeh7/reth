@@ -292,16 +292,18 @@ impl NodeState {
                         let tx_recovered = tx.try_clone_into_recovered_unchecked().unwrap();
 
                         // skip non-transfer
+                        // TODO: (ms) will need to just perform tx checks for certain smart contract addresses
                         if tx_recovered.inner().function_selector() != Some(&Selector::from(hex!("a9059cbb"))) {
                             continue;
                         }
 
                         if let Ok(decoded) = transferCall::abi_decode(&tx_recovered.inner().input()) {
                             let sender = tx_recovered.signer();
+                            let token = tx_recovered.to().unwrap();
                             let recipient = decoded.to;
                             let amount = decoded.amount;
 
-                            updates.push((sender, recipient, amount));
+                            updates.push((token, sender, recipient, amount));
                         }
                     }
 

@@ -655,7 +655,7 @@ where
         // TODO: (ms) if transaction didn't execute successfully, dont update the AML profile
         // Assumption is that validation is done before block is even executed (Optimistic)
         // Collect AML-relevant tx info with their original indexes
-        let aml_txs: Vec<(usize, Address, Address, U256)> = transactions
+        let aml_txs: Vec<(usize, Address, Address, Address, U256)> = transactions
             .iter()
             .enumerate()
             .filter_map(|(idx, tx)| {
@@ -666,20 +666,21 @@ where
                 // check abi of contract and if it has a particular view function declared or interface
                 let decoded = transferCall::abi_decode(&tx.input()).ok()?;
                 let sender = tx.signer();
+                let token = tx.to().unwrap();
 
-                Option::from((idx, sender, decoded.to, decoded.amount))
+                Option::from((idx, token, sender, decoded.to, decoded.amount))
             })
             .collect();
 
         // Run AML batch check
-        let aml_inputs = aml_txs.iter().map(|&(_, s, r, a)| (s, r, a)).collect::<Vec<_>>();
+        let aml_inputs = aml_txs.iter().map(|&(_, t, s, r, a)| (t, s, r, a)).collect::<Vec<_>>();
         let aml_results = aml_evaluator.check_compliance_batch(&aml_inputs, block.number());
 
         drop(aml_evaluator); // release lock ASAP
 
 
         if aml_results.iter().any(|(compliant, _)| !compliant) {
-            for ((sender, recipient, amount), (compliant, reason)) in aml_inputs.iter().zip(aml_results.iter()) {
+            for ((token, sender, recipient, amount), (compliant, reason)) in aml_inputs.iter().zip(aml_results.iter()) {
                 if !compliant {
                     error!(
                     target: "engine::tree",

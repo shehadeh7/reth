@@ -328,11 +328,12 @@ where
         // to is the contract address
         if pool_tx.transaction.function_selector() == Some(&Selector::from(hex!("a9059cbb"))) {
             if let Ok(decoded) = transferCall::abi_decode(&pool_tx.transaction.input()) {
+                let token_address = pool_tx.to().unwrap();
                 let sender = pool_tx.sender();
                 let recipient = decoded.to;
                 let amount = decoded.amount;
 
-                let (status, reason) = aml_evaluator.check_mempool_tx(sender, recipient, amount, block_number);
+                let (status, reason) = aml_evaluator.check_mempool_tx(token_address, sender, recipient, amount, block_number);
 
                 if !status {
                     print!("Blocked by AML: {:?}", reason);

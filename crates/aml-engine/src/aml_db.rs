@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap};
+use std::collections::{BTreeMap, HashMap};
 use alloy_primitives::{Address, FixedBytes, U256};
 use bincode::{Encode, Decode, config};
 use redb::{Database, ReadableTable, TableDefinition};
@@ -81,25 +81,29 @@ pub struct AccountProfileDb {
     address: [u8; 20],
 
     // block_number => metrics for that block
-    pub metrics: BTreeMap<u64, BlockMetricsDb>,
+    pub metrics: HashMap<[u8; 20], BTreeMap<u64, BlockMetricsDb>>,
 
     // per-window caches; indices must align with `windows`
-    pub caches: Vec<WindowCacheDb>,
+    pub caches: HashMap<[u8; 20], Vec<WindowCacheDb>>,
 
     last_update_block: u64,      // Last block number this profile was updated
 }
 
 impl From<&AccountProfile> for AccountProfileDb {
     fn from(profile: &AccountProfile) -> Self {
-
-        // Convert BTreeMap<u64, BlockMetrics> -> BTreeMap<u64, BlockMetricsDb>
         let metrics = profile.metrics.iter()
-            .map(|(blk, m)| (*blk, BlockMetricsDb::from(m)))
-            .collect::<BTreeMap<_, _>>();
+            .map(|(&token, blocks)| (
+                *token.0.as_ref(),
+                blocks.iter().map(|(b, m)| (*b, BlockMetricsDb::from(m))).collect()
+            ))
+            .collect();
 
         let caches = profile.caches.iter()
-            .map(WindowCacheDb::from)
-            .collect::<Vec<_>>();
+            .map(|(&token, windows)| (
+                *token.0.as_ref(),
+                windows.iter().map(WindowCacheDb::from).collect()
+            ))
+            .collect();
 
         Self {
             address: *profile.address.0.as_ref(),
@@ -112,15 +116,19 @@ impl From<&AccountProfile> for AccountProfileDb {
 
 impl From<AccountProfileDb> for AccountProfile {
     fn from(d: AccountProfileDb) -> Self {
-
         let metrics = d.metrics.into_iter()
-            .map(|(blk, mdb)| (blk, BlockMetrics::from(mdb)))
-            .collect::<BTreeMap<_, _>>();
+            .map(|(tbytes, blocks)| (
+                Address(FixedBytes::from(tbytes)),
+                blocks.into_iter().map(|(b, m)| (b, BlockMetrics::from(m))).collect()
+            ))
+            .collect();
 
         let caches = d.caches.into_iter()
-            .map(WindowCache::from)
-            .collect::<Vec<_>>();
-
+            .map(|(tbytes, windows)| (
+                Address(FixedBytes::from(tbytes)),
+                windows.into_iter().map(WindowCache::from).collect()
+            ))
+            .collect();
 
         Self {
             address: Address(FixedBytes::from(d.address)),
@@ -298,18 +306,28 @@ mod tests {
         assert_eq!(a.address, b.address, "address mismatch");
         assert_eq!(a.last_update_block, b.last_update_block, "last_update_block mismatch");
 
-        // metrics
+        // metrics: token -> blocks
         assert_eq!(a.metrics.len(), b.metrics.len(), "metrics length mismatch");
-        for (blk, ma) in &a.metrics {
-            let mb = b.metrics.get(blk).expect("missing block in loaded metrics");
-            assert_block_metrics_eq(ma, mb);
+        for (&token, token_metrics_a) in &a.metrics {
+            let token_metrics_b = b.metrics.get(&token).expect("missing token in loaded metrics");
+
+            assert_eq!(token_metrics_a.len(), token_metrics_b.len(), "token metrics length mismatch");
+            for (blk, ma) in token_metrics_a {
+                let mb = token_metrics_b.get(blk).expect("missing block in loaded metrics");
+                assert_block_metrics_eq(ma, mb);
+            }
         }
 
-        // caches
+        // caches: token -> windows
         assert_eq!(a.caches.len(), b.caches.len(), "caches length mismatch");
-        assert_eq!(a.caches.len(), WINDOWS.len(), "caches/windows length mismatch");
-        for (ca, cb) in a.caches.iter().zip(b.caches.iter()) {
-            assert_cache_eq(ca, cb);
+        for (&token, token_caches_a) in &a.caches {
+            let token_caches_b = b.caches.get(&token).expect("missing token in loaded caches");
+
+            assert_eq!(token_caches_a.len(), token_caches_b.len(), "token caches length mismatch");
+            assert_eq!(token_caches_a.len(), WINDOWS.len(), "caches/windows length mismatch");
+            for (ca, cb) in token_caches_a.iter().zip(token_caches_b.iter()) {
+                assert_cache_eq(ca, cb);
+            }
         }
     }
 
@@ -347,10 +365,17 @@ mod tests {
             mk_cache(510_100, 125_000, 4),
         ];
 
+        let metrics_map = HashMap::from([
+            (addr(0), metrics)
+        ]);
+        let cache_map = HashMap::from([
+            (addr(0), caches)
+        ]);
+
         let profile = AccountProfile {
             address: addr(1),
-            metrics,
-            caches,
+            metrics: metrics_map,
+            caches: cache_map,
             last_update_block: 20_000_000,
         };
 
@@ -371,14 +396,20 @@ mod tests {
         // Profile 1
         let mut m1 = BTreeMap::new();
         m1.insert(20_000_000u64, mk_block_metrics(111, 222, 1));
+        let metrics_map = HashMap::from([
+            (addr(0), m1)
+        ]);
+        let cache_map = HashMap::from([
+            (addr(0), vec![
+                mk_cache(111, 222, 1),
+                mk_cache(111, 222, 1),
+                mk_cache(111, 222, 1),
+            ])
+        ]);
         let p1 = AccountProfile {
             address: addr(1),
-            metrics: m1,
-            caches: vec![
-                mk_cache(111, 222, 1),
-                mk_cache(111, 222, 1),
-                mk_cache(111, 222, 1),
-            ],
+            metrics: metrics_map,
+            caches: cache_map,
             last_update_block: 20_000_000,
         };
 
@@ -386,14 +417,20 @@ mod tests {
         let mut m2 = BTreeMap::new();
         m2.insert(19_123_456u64, mk_block_metrics(999_999, 0, 2));
         m2.insert(19_123_999u64, mk_block_metrics(1, 2, 1));
-        let p2 = AccountProfile {
-            address: addr(2),
-            metrics: m2,
-            caches: vec![
+        let m2_map = HashMap::from([
+            (addr(0), m2)
+        ]);
+        let cache2_map = HashMap::from([
+            (addr(0), vec![
                 mk_cache(1, 2, 1),
                 mk_cache(1_000_000, 2, 3),
                 mk_cache(1_000_000, 2, 3),
-            ],
+            ])
+        ]);
+        let p2 = AccountProfile {
+            address: addr(2),
+            metrics: m2_map,
+            caches: cache2_map,
             last_update_block: 19_124_000,
         };
 
@@ -418,14 +455,20 @@ mod tests {
         // Profile 1
         let mut m1 = BTreeMap::new();
         m1.insert(20_000_000u64, mk_block_metrics(111, 222, 1));
+        let metrics_map = HashMap::from([
+            (addr(0), m1)
+        ]);
+        let cache_map = HashMap::from([
+            (addr(0), vec![
+                mk_cache(111, 222, 1),
+                mk_cache(111, 222, 1),
+                mk_cache(111, 222, 1),
+            ])
+        ]);
         let p1 = AccountProfile {
             address: addr(1),
-            metrics: m1,
-            caches: vec![
-                mk_cache(111, 222, 1),
-                mk_cache(111, 222, 1),
-                mk_cache(111, 222, 1),
-            ],
+            metrics: metrics_map,
+            caches: cache_map,
             last_update_block: 20_000_000,
         };
 
@@ -433,14 +476,20 @@ mod tests {
         let mut m2 = BTreeMap::new();
         m2.insert(19_123_456u64, mk_block_metrics(999_999, 0, 2));
         m2.insert(19_123_999u64, mk_block_metrics(1, 2, 1));
-        let p2 = AccountProfile {
-            address: addr(2),
-            metrics: m2,
-            caches: vec![
+        let m2_map = HashMap::from([
+            (addr(0), m2)
+        ]);
+        let cache_map = HashMap::from([
+            (addr(0), vec![
                 mk_cache(1, 2, 1),
                 mk_cache(1_000_000, 2, 3),
                 mk_cache(1_000_000, 2, 3),
-            ],
+            ])
+        ]);
+        let p2 = AccountProfile {
+            address: addr(2),
+            metrics: m2_map,
+            caches: cache_map,
             last_update_block: 19_124_000,
         };
 
@@ -490,15 +539,21 @@ mod tests {
                 5,
             ),
         );
+        let metrics_map = HashMap::from([
+            (addr(0), metrics)
+        ]);
+        let cache_map = HashMap::from([
+            (addr(0), vec![
+                mk_cache(1_234_567, 765_432, 5),
+                mk_cache(1_234_567, 765_432, 5),
+                mk_cache(1_234_567, 765_432, 5),
+            ])
+        ]);
 
         let profile = AccountProfile {
             address: addr(0xFF),
-            metrics,
-            caches: vec![
-                mk_cache(1_234_567, 765_432, 5),
-                mk_cache(1_234_567, 765_432, 5),
-                mk_cache(1_234_567, 765_432, 5),
-            ],
+            metrics: metrics_map,
+            caches: cache_map,
             last_update_block: 77,
         };
 
@@ -508,9 +563,6 @@ mod tests {
 
         // Deep compare
         assert_profile_eq(&profile, &loaded);
-
-        // Extra checks on maps
-        let bm = loaded.metrics.get(&77).unwrap();
     }
 
     #[test]
@@ -519,14 +571,20 @@ mod tests {
 
         let mut metrics = BTreeMap::new();
         metrics.insert(123u64, mk_block_metrics(42, 0, 1));
+        let metrics_map = HashMap::from([
+            (addr(0), metrics)
+        ]);
+        let cache_map = HashMap::from([
+            (addr(0), vec![
+                mk_cache(42, 0, 1),
+                mk_cache(42, 0, 1),
+                mk_cache(42, 0, 1),
+            ])
+        ]);
         let profile = AccountProfile {
             address: addr(7),
-            metrics,
-            caches: vec![
-                mk_cache(42, 0, 1),
-                mk_cache(42, 0, 1),
-                mk_cache(42, 0, 1),
-            ],
+            metrics: metrics_map,
+            caches: cache_map,
             last_update_block: 123,
         };
 

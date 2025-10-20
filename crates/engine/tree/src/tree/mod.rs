@@ -1925,7 +1925,7 @@ where
                         }
 
                         if let Ok(decoded) = transferCall::abi_decode(&tx_recovered.inner().input()) {
-                            updates.push((tx_recovered.signer(), decoded.to, decoded.amount));
+                            updates.push((tx_recovered.to().unwrap(), tx_recovered.signer(), decoded.to, decoded.amount));
                         }
                     }
                 }
@@ -1944,7 +1944,7 @@ where
                         }
 
                         if let Ok(decoded) = transferCall::abi_decode(&tx_recovered.inner().input()) {
-                            updates.push((tx_recovered.signer(), decoded.to, decoded.amount));
+                            updates.push((tx_recovered.to().unwrap(), tx_recovered.signer(), decoded.to, decoded.amount));
                         }
                     }
                 }
@@ -2423,12 +2423,6 @@ where
                     // we're also persisting the finalized block on disk so we can reload it on
                     // restart this is required by optimism which queries the finalized block: <https://github.com/ethereum-optimism/optimism/blob/c383eb880f307caa3ca41010ec10f30f08396b2e/op-node/rollup/sync/start.go#L65-L65>
                     let _ = self.persistence.save_finalized_block_number(finalized.number());
-                    let mut aml_evaluator = AML_EVALUATOR
-                        .get()
-                        .expect("AML_EVALUATOR not initialized")
-                        .write()
-                        .expect("poisoned lock");
-                    aml_evaluator.update_finalized_block(finalized.number());
                     self.canonical_in_memory_state.set_finalized(finalized);
                 }
             }
