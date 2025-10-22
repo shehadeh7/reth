@@ -31,7 +31,7 @@ fn main() {
             let db = AmlDb::new(db_path.to_str().unwrap());
             
             info!("launching aml evaluator");
-            match AML_EVALUATOR.set(RwLock::new(AmlEvaluator::new(db))) {
+            match AML_EVALUATOR.set(RwLock::new(AmlEvaluator::new(db, 1000))) {
                 Ok(()) => {
                     // Successfully initialized
                     info!("AML_EVALUATOR initialized");

@@ -1,7 +1,9 @@
 use crate::account_profile::{AccountProfile};
 use alloy_primitives::{Address, U256};
 use std::collections::{HashMap};
+use std::num::NonZeroUsize;
 use std::sync::{OnceLock, RwLock};
+use lru::LruCache;
 use crate::aml_db::{AccountProfileDb, AmlDb};
 use crate::aml_rules::{AmlRule, InboundSumRule, OutboundCountRule, OutboundSumRule};
 
@@ -47,14 +49,15 @@ pub static AML_EVALUATOR: OnceLock<RwLock<AmlEvaluator>> = OnceLock::new();
 
 pub struct AmlEvaluator {
     db: AmlDb,
-    latest_profiles: HashMap<Address, AccountProfile>, // TODO: Latest Profiles (Modify to LRU)
+    // TODO: Add support for versioning in block metrics, rules, whatever we could
+    latest_profiles: LruCache<Address, AccountProfile>,
     mempool_profiles: HashMap<Address, AccountProfile>,
     current_mempool_block: Option<u64>,
     rules: Vec<Box<dyn AmlRule>>
 }
 
 impl AmlEvaluator {
-    pub fn new(db: AmlDb) -> Self {
+    pub fn new(db: AmlDb, cache_size: usize) -> Self {
         let rules: Vec<Box<dyn AmlRule>> = vec![
             Box::new(OutboundSumRule {
                 limit_per_window: vec![DAILY_LIMIT, WEEKLY_LIMIT, MONTHLY_LIMIT]
@@ -67,10 +70,9 @@ impl AmlEvaluator {
             }),
         ];
 
-
         Self {
             db,
-            latest_profiles: HashMap::new(),
+            latest_profiles: LruCache::new(NonZeroUsize::new(cache_size).unwrap()), // TODO: change this parameter cache size, ideally configurable
             mempool_profiles: HashMap::new(),
             current_mempool_block: None,
             rules,
@@ -119,28 +121,31 @@ impl AmlEvaluator {
     /// Fetch a mutable reference to the profile from latest_profiles (LRU cache)
     /// If not in cache, load from DB and optionally cache it.
     pub fn fetch_profile_mut(&mut self, addr: Address, block_number: u64) -> &mut AccountProfile {
-        use std::collections::hash_map::Entry;
-
-        match self.latest_profiles.entry(addr) {
-            Entry::Occupied(entry) => {
-                let profile = entry.into_mut();
-                profile.prune_old(block_number, WINDOWS);
-                profile
-            }
-            Entry::Vacant(entry) => {
-                let mut profile = self.db.load_profile(&entry.key())
-                    .map(AccountProfile::from)
-                    .unwrap_or_else(|| AccountProfile::new(*entry.key(), block_number));
-
-                profile.prune_old(block_number, WINDOWS);
-                entry.insert(profile)
-            }
+        if self.latest_profiles.contains(&addr) {
+            let profile = self.latest_profiles.get_mut(&addr).unwrap();
+            profile.prune_old(block_number, WINDOWS);
+            return profile;
         }
+
+        // Not in cache — load from DB or create new
+        let mut profile = self.db.load_profile(&addr)
+            .map(AccountProfile::from)
+            .unwrap_or_else(|| AccountProfile::new(addr, block_number));
+        profile.prune_old(block_number, WINDOWS);
+
+        // Push into LRU, evict if necessary
+        if let Some((evicted_addr, evicted_profile)) = self.latest_profiles.push(addr, profile) {
+            // Persist evicted profile to DB
+            self.db.save_profile(&AccountProfileDb::from(&evicted_profile));
+        }
+
+        // Return the newly inserted profile
+        self.latest_profiles.get_mut(&addr).unwrap()
     }
 
     /// Fetch an owned copy of the profile, without modifying the LRU cache
     pub fn fetch_profile_owned(&self, addr: Address, block_number: u64) -> AccountProfile {
-        if let Some(profile) = self.latest_profiles.get(&addr) {
+        if let Some(profile) = self.latest_profiles.peek(&addr) {
             let mut snapshot = profile.clone();
             if snapshot.last_update_block < block_number {
                 snapshot.prune_old(block_number, WINDOWS);
@@ -207,8 +212,6 @@ impl AmlEvaluator {
         let mut temp_profiles = HashMap::new();
         let mut results = Vec::with_capacity(transactions.len());
 
-        println!("calling check compliance batch with {:?} {:?}", transactions, block_number);
-
         for &(token, sender, recipient, amount) in transactions {
             if sender == recipient {
                 results.push((true, None));
@@ -228,9 +231,6 @@ impl AmlEvaluator {
             // Get mutable profiles to apply transaction effects
             let mut sender_profile = temp_profiles.remove(&sender).unwrap();
             let mut recipient_profile = temp_profiles.remove(&recipient).unwrap();
-
-            println!("sender profile is in check compl batch {:?}", sender_profile);
-            println!("recipient profile is check compl batch {:?}", recipient_profile);
 
             let reason = self.check_compliance_internal(token, &sender_profile, &recipient_profile, amount, block_number);
 
@@ -291,8 +291,7 @@ impl AmlEvaluator {
                 }
 
                 // Sender rollback
-                if self.latest_profiles.contains_key(&sender) {
-                    let sender_profile = self.fetch_profile_mut(sender, *block_number);
+                if let Some(sender_profile) = self.latest_profiles.get_mut(&sender) {
                     sender_profile.remove_outbound(token, *block_number, amount, recipient);
                 } else {
                     let mut sender_profile = self.fetch_profile_owned(sender, *block_number);
@@ -301,8 +300,7 @@ impl AmlEvaluator {
                 }
 
                 // Recipient rollback
-                if self.latest_profiles.contains_key(&recipient) {
-                    let recipient_profile = self.fetch_profile_mut(recipient, *block_number);
+                if let Some(recipient_profile) = self.latest_profiles.get_mut(&recipient) {
                     recipient_profile.remove_inbound(token, *block_number, amount, sender);
                 } else {
                     let mut recipient_profile = self.fetch_profile_owned(recipient, *block_number);
@@ -341,11 +339,128 @@ mod tests {
     }
 
     fn new_evaluator() -> AmlEvaluator {
+        new_evaluator_with_cache_size(100)
+    }
+
+    fn new_evaluator_with_cache_size(cache_size: usize) -> AmlEvaluator {
         // temp dir to avoid writing to real DB
         let dir = tempdir().unwrap();
         let db_path = dir.path().join("aml_db");
         let db = AmlDb::new(db_path.to_str().unwrap());
-        AmlEvaluator::new(db)
+        AmlEvaluator::new(db, cache_size)
+    }
+
+    #[test]
+    fn test_fetch_profile_mut_basic() {
+        let mut evaluator = new_evaluator();
+        let address = addr(1);
+        let block_num = 100;
+
+        // First fetch should create a new profile
+        let profile = evaluator.fetch_profile_mut(address, block_num);
+        assert_eq!(profile.address, address);
+
+        // Second fetch should return the same profile from cache
+        let profile2 = evaluator.fetch_profile_mut(address, block_num);
+        assert_eq!(profile2.address, address);
+    }
+
+    #[test]
+    fn test_fetch_profile_mut_lru_eviction() {
+        // Create evaluator with small cache size to test eviction
+        let mut evaluator = new_evaluator_with_cache_size(2);
+        let addr1 = addr(1);
+        let addr2 = addr(2);
+        let addr3 = addr(3);
+        let block_num = 100;
+
+        // Fill cache with 2 profiles
+        evaluator.fetch_profile_mut(addr1, block_num);
+        evaluator.fetch_profile_mut(addr2, block_num);
+
+        // Verify both are in cache
+        assert!(evaluator.latest_profiles.contains(&addr1));
+        assert!(evaluator.latest_profiles.contains(&addr2));
+
+        // Adding a third should evict the first (LRU)
+        evaluator.fetch_profile_mut(addr3, block_num);
+
+        // Verify addr1 was evicted and addr2, addr3 are still in cache
+        assert!(!evaluator.latest_profiles.contains(&addr1), "addr1 should have been evicted");
+        assert!(evaluator.latest_profiles.contains(&addr2), "addr2 should still be in cache");
+        assert!(evaluator.latest_profiles.contains(&addr3), "addr3 should be in cache");
+
+        // Fetch addr1 again - it should be reloaded from DB and added back to cache
+        let profile1_reloaded = evaluator.fetch_profile_mut(addr1, block_num);
+        assert_eq!(profile1_reloaded.address, addr1);
+        assert!(evaluator.latest_profiles.contains(&addr1), "addr1 should be back in cache");
+
+        // This should have evicted addr2 (since it was least recently used)
+        assert!(!evaluator.latest_profiles.contains(&addr2), "addr2 should now be evicted");
+    }
+
+    #[test]
+    fn test_fetch_profile_mut_persistence() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("aml_db");
+        let addr1 = addr(1);
+        let block_num = 100;
+
+        // Create evaluator, add profile, and let it go out of scope
+        {
+            let db = AmlDb::new(db_path.to_str().unwrap());
+            let mut evaluator = AmlEvaluator::new(db, 1);
+
+            let profile = evaluator.fetch_profile_mut(addr1, block_num);
+            // Modify something to ensure it's different
+            profile.prune_old(block_num, WINDOWS);
+
+            // Add another address to force eviction of addr1
+            evaluator.fetch_profile_mut(addr(2), block_num);
+        }
+
+        // Create new evaluator with same DB
+        {
+            let db = AmlDb::new(db_path.to_str().unwrap());
+            let mut evaluator = AmlEvaluator::new(db, 1);
+
+            // Fetch addr1 - should load from DB (it was evicted and persisted)
+            let profile_loaded = evaluator.fetch_profile_mut(addr1, block_num);
+            assert_eq!(profile_loaded.address, addr1);
+        }
+    }
+
+    #[test]
+    fn test_fetch_profile_mut_prune_on_fetch() {
+        let mut evaluator = new_evaluator();
+        let address = addr(1);
+        let block_num = 100;
+
+        // First fetch at block 100
+        let profile = evaluator.fetch_profile_mut(address, block_num);
+        assert_eq!(profile.address, address);
+
+        // Fetch again at a much later block to trigger pruning
+        let later_block = block_num + 216000 + 100;
+        let profile2 = evaluator.fetch_profile_mut(address, later_block);
+        assert_eq!(profile2.address, address);
+    }
+
+    #[test]
+    fn test_fetch_profile_mut_no_eviction_under_capacity() {
+        let mut evaluator = new_evaluator_with_cache_size(5);
+        let block_num = 100;
+
+        // Add 3 profiles to cache with capacity of 5
+        for i in 1..=3 {
+            evaluator.fetch_profile_mut(addr(i), block_num);
+        }
+
+        // All should be retrievable from cache without DB access
+        for i in 1..=3 {
+            let profile = evaluator.fetch_profile_mut(addr(i), block_num);
+            assert_eq!(profile.address, addr(i));
+        }
     }
 
     #[test]
@@ -445,8 +560,8 @@ mod tests {
         evaluator.update_profiles_batch(&txs, block_number);
 
         // --- Check latest_profiles ---
-        let sender_profile = evaluator.latest_profiles.get(&sender).unwrap();
-        let recipient_profile = evaluator.latest_profiles.get(&recipient).unwrap();
+        let sender_profile = evaluator.latest_profiles.peek(&sender).unwrap();
+        let recipient_profile = evaluator.latest_profiles.peek(&recipient).unwrap();
 
         assert!(sender_profile.metrics.get(&token).unwrap().contains_key(&block_number), "Sender metrics not updated");
         assert!(recipient_profile.metrics.get(&token).unwrap().contains_key(&block_number), "Recipient metrics not updated");
@@ -490,9 +605,9 @@ mod tests {
         evaluator.update_profiles_batch(&txs, block_number);
 
         // Check latest_profiles
-        let a_profile = evaluator.latest_profiles.get(&a).unwrap();
-        let b_profile = evaluator.latest_profiles.get(&b).unwrap();
-        let c_profile = evaluator.latest_profiles.get(&c).unwrap();
+        let a_profile = evaluator.latest_profiles.peek(&a).unwrap();
+        let b_profile = evaluator.latest_profiles.peek(&b).unwrap();
+        let c_profile = evaluator.latest_profiles.peek(&c).unwrap();
 
         assert_eq!(a_profile.metrics.get(&token).unwrap().get(&block_number).unwrap().spend_amount, U256::from(10));
         assert_eq!(b_profile.metrics.get(&token).unwrap().get(&block_number).unwrap().spend_amount, U256::from(20));

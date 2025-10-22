@@ -19,41 +19,27 @@ reth-chainspec.workspace = true
 reth-eth-wire-types.workspace = true
 reth-primitives-traits.workspace = true
 reth-execution-types.workspace = true
-reth-fs-util.workspace = true
 reth-storage-api.workspace = true
-reth-tasks.workspace = true
 revm-interpreter.workspace = true
 revm-primitives.workspace = true
 
 # ethereum
 alloy-eips = { workspace = true, features = ["kzg"] }
 alloy-primitives.workspace = true
-alloy-sol-types.workspace = true
-alloy-rlp.workspace = true
 alloy-consensus = { workspace = true, features = ["kzg"] }
 
 # async/futures
-futures-util.workspace = true
 parking_lot.workspace = true
-tokio = { workspace = true, features = ["sync"] }
-tokio-stream.workspace = true
 
 # metrics
-reth-metrics.workspace = true
-metrics.workspace = true
 
 # misc
-aquamarine.workspace = true
-thiserror.workspace = true
-tracing.workspace = true
-rustc-hash.workspace = true
-schnellru.workspace = true
 serde = { workspace = true, features = ["derive", "rc"], optional = true }
 bitflags.workspace = true
-auto_impl.workspace = true
 smallvec.workspace = true
 redb = "2.5.0"
 bincode = "2.0.1"
+lru = "0.16.2"
 
 # testing
 rand = { workspace = true, optional = true }
@@ -64,17 +50,12 @@ log = "0.4.27"
 
 [dev-dependencies]
 reth-provider = { workspace = true, features = ["test-utils"] }
-reth-tracing.workspace = true
 alloy-primitives = { workspace = true, features = ["rand"] }
 paste.workspace = true
 rand.workspace = true
 proptest.workspace = true
 proptest-arbitrary-interop.workspace = true
-criterion.workspace = true
-assert_matches.workspace = true
 tempfile.workspace = true
-serde_json.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread"] }
 
 [features]
 serde = [
