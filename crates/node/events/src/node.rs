@@ -20,7 +20,6 @@ use std::{
     task::{Context, Poll},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use alloy_consensus::transaction::SignerRecoverable;
 use tokio::time::Interval;
 use tracing::{debug, info, warn};
 use aml_engine::aml::{AML_EVALUATOR};
@@ -302,6 +301,10 @@ impl NodeState {
                             let token = tx_recovered.to().unwrap();
                             let recipient = decoded.to;
                             let amount = decoded.amount;
+
+                            if aml_evaluator.aml_support_cache.get(&token) != Some(&true) {
+                                continue;
+                            }
 
                             updates.push((token, sender, recipient, amount));
                         }

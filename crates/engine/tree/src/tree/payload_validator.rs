@@ -465,6 +465,8 @@ where
         // validate block consensus rules
         ensure_ok!(self.validate_block_inner(&block));
 
+        ensure_ok!(self.validate_aml(&block, &state_provider));
+
         // now validate against the parent
         if let Err(e) =
             self.consensus.validate_header_against_parent(block.sealed_header(), &parent_block)
@@ -644,6 +646,16 @@ where
             return Err(e)
         }
 
+        Ok(())
+    }
+
+    /// Validate block AML consensus
+    fn validate_aml<S: StateProvider>(
+        &self,
+        block: &RecoveredBlock<N::Block>,
+        state: &S
+    ) -> Result<(), ConsensusError> {
+
         // TODO: (ms) Add the AML profile consensus rule check here
         let mut aml_evaluator = AML_EVALUATOR
             .get()
@@ -662,11 +674,15 @@ where
                 if tx.inner().function_selector() != Some(&Selector::from(hex!("a9059cbb"))) {
                     return None;
                 }
-                // check if it has a particular function
-                // check abi of contract and if it has a particular view function declared or interface
+
                 let decoded = transferCall::abi_decode(&tx.input()).ok()?;
                 let sender = tx.signer();
                 let token = tx.to().unwrap();
+
+                if !aml_evaluator.supports_aml_interface(token, state) {
+                    // Contract doesn't support AML, skip validation
+                    return None;
+                }
 
                 Option::from((idx, token, sender, decoded.to, decoded.amount))
             })

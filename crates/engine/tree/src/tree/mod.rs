@@ -1875,7 +1875,6 @@ where
 
         // TODO: (ms) check if we can add the change here for AML profile reversion?
         // TODO: test out the exact events being emitted during a reorg
-        // ensure to check the receipt of transactions when reverting/adding
 
         // reinsert any missing reorged blocks
         if let NewCanonicalChain::Reorg { new, old } = &chain_update {
@@ -1925,7 +1924,12 @@ where
                         }
 
                         if let Ok(decoded) = transferCall::abi_decode(&tx_recovered.inner().input()) {
-                            updates.push((tx_recovered.to().unwrap(), tx_recovered.signer(), decoded.to, decoded.amount));
+                            let token = tx_recovered.to().unwrap();
+
+                            // Only include if contract supports AML
+                            if aml_evaluator.aml_support_cache.get(&token) == Some(&true) {
+                                updates.push((token, tx_recovered.signer(), decoded.to, decoded.amount));
+                            }
                         }
                     }
                 }
@@ -1944,7 +1948,12 @@ where
                         }
 
                         if let Ok(decoded) = transferCall::abi_decode(&tx_recovered.inner().input()) {
-                            updates.push((tx_recovered.to().unwrap(), tx_recovered.signer(), decoded.to, decoded.amount));
+                            let token = tx_recovered.to().unwrap();
+
+                            // Only include if contract supports AML
+                            if aml_evaluator.aml_support_cache.get(&token) == Some(&true) {
+                                updates.push((token, tx_recovered.signer(), decoded.to, decoded.amount));
+                            }
                         }
                     }
                 }

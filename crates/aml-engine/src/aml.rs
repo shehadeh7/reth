@@ -1,9 +1,11 @@
 use crate::account_profile::{AccountProfile};
-use alloy_primitives::{Address, U256};
+use alloy_primitives::{keccak256, Address, FixedBytes, U256};
 use std::collections::{HashMap};
 use std::num::NonZeroUsize;
 use std::sync::{OnceLock, RwLock};
 use lru::LruCache;
+use revm_primitives::KECCAK_EMPTY;
+use reth_provider::StateProvider;
 use crate::aml_db::{AccountProfileDb, AmlDb};
 use crate::aml_rules::{AmlRule, InboundSumRule, OutboundCountRule, OutboundSumRule};
 
@@ -53,7 +55,8 @@ pub struct AmlEvaluator {
     latest_profiles: LruCache<Address, AccountProfile>,
     mempool_profiles: HashMap<Address, AccountProfile>,
     current_mempool_block: Option<u64>,
-    rules: Vec<Box<dyn AmlRule>>
+    rules: Vec<Box<dyn AmlRule>>,
+    pub aml_support_cache: HashMap<Address, bool>, // Token addresses for AML
 }
 
 impl AmlEvaluator {
@@ -76,6 +79,7 @@ impl AmlEvaluator {
             mempool_profiles: HashMap::new(),
             current_mempool_block: None,
             rules,
+            aml_support_cache: HashMap::new(),
         }
     }
 
@@ -324,6 +328,59 @@ impl AmlEvaluator {
         for (block_number, txs) in new_blocks {
             self.update_profiles_batch(txs, *block_number);
         }
+    }
+
+    /// Checks if the token address is onboarded to AML check
+    pub fn supports_aml_interface<S: StateProvider>(
+        &mut self,
+        contract_address: Address,
+        state: &S,
+    ) -> bool {
+        // Check cache first
+        if let Some(&supported) = self.aml_support_cache.get(&contract_address) {
+            return supported;
+        }
+
+        // Calculate selector for supportsAML()
+        let selector = FixedBytes::<4>::from_slice(&keccak256("supportsAML()")[..4]);
+
+        // Get contract account
+        let account = match state.basic_account(&contract_address) {
+            Ok(Some(acc)) => acc,
+            _ => {
+                self.aml_support_cache.insert(contract_address, false);
+                return false;
+            }
+        };
+
+        // Check if contract exists
+        if account.bytecode_hash == Some(KECCAK_EMPTY) {
+            self.aml_support_cache.insert(contract_address, false);
+            return false;
+        }
+
+        // Get the bytecode
+        let code = match state.bytecode_by_hash(&account.bytecode_hash.unwrap()) {
+            Ok(Some(code)) => code,
+            _ => {
+                self.aml_support_cache.insert(contract_address, false);
+                return false;
+            }
+        };
+
+        let bytecode = code.bytecode().as_ref();
+
+        // Look for complete dispatcher pattern: PUSH4 <selector> EQ JUMPI
+        // PUSH4 = 0x63, EQ = 0x14, JUMPI = 0x57
+        let supports_aml = bytecode.windows(7).any(|window| {
+            window[0] == 0x63 &&                      // PUSH4
+                &window[1..5] == selector.as_slice()  // selector bytes
+        });
+
+        // Cache the result
+        self.aml_support_cache.insert(contract_address, supports_aml);
+
+        supports_aml
     }
 }
 

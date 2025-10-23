@@ -329,6 +329,12 @@ where
         if pool_tx.transaction.function_selector() == Some(&Selector::from(hex!("a9059cbb"))) {
             if let Ok(decoded) = transferCall::abi_decode(&pool_tx.transaction.input()) {
                 let token_address = pool_tx.to().unwrap();
+
+                // Check if contract opted into AML
+                if !aml_evaluator.supports_aml_interface(token_address, &state_provider) {
+                    // Contract doesn't support AML, skip validation
+                    continue;
+                }
                 let sender = pool_tx.sender();
                 let recipient = decoded.to;
                 let amount = decoded.amount;
