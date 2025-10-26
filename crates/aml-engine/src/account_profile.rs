@@ -18,6 +18,7 @@ pub struct WindowCache {
     pub count: u32,             // Outbound count
 }
 
+// TODO: minimize this to hourly/daily since weekly/monthly requires storing a lot of data in memory
 const WINDOWS: &[u64] = &[7200, 50400, 216000];  // daily, weekly, monthly assuming 12s/block
 
 #[derive(Debug, Clone)]
@@ -41,8 +42,9 @@ impl AccountProfile {
         }
     }
 
-    /// Prune spends older than the specified window and recompute sums.
-    pub fn prune_old(&mut self, now: u64, windows: &[u64]) {
+    /// Advance sliding spend windows to the current block,
+    /// removing expired entries and updating aggregate caches.
+    pub fn advance_sliding_windows(&mut self, now: u64, windows: &[u64]) {
         if now <= self.last_update_block {
             return;
         }
@@ -275,7 +277,7 @@ mod tests {
         assert_eq!(entry.tx_count, 2, "Tx count should be 2");
 
         // Check caches (all windows include this block)
-        profile.prune_old(20_000_000, WINDOWS);
+        profile.advance_sliding_windows(20_000_000, WINDOWS);
         assert_eq!(profile.caches.get(&token).unwrap()[0].sum, U256::from(310_100), "Daily outbound sum should be 310_100");
         assert_eq!(profile.caches.get(&token).unwrap()[0].count, 2, "Daily count should be 2");
         assert_eq!(profile.caches.get(&token).unwrap()[1].sum, U256::from(310_100), "Weekly outbound sum should be 310_100");
@@ -300,7 +302,7 @@ mod tests {
         assert_eq!(entry.receive_amount, U256::from(310_100), "Inbound receive should accumulate");
 
         // Check caches
-        profile.prune_old(20_000_000, WINDOWS);
+        profile.advance_sliding_windows(20_000_000, WINDOWS);
         assert_eq!(profile.caches.get(&token).unwrap()[0].inbound_sum, U256::from(310_100), "Daily inbound sum should be 310_100");
         assert_eq!(profile.caches.get(&token).unwrap()[1].inbound_sum, U256::from(310_100), "Weekly inbound sum should be 310_100");
         assert_eq!(profile.caches.get(&token).unwrap()[2].inbound_sum, U256::from(310_100), "Monthly inbound sum should be 310_100");
@@ -323,9 +325,7 @@ mod tests {
         // Recent inbound
         profile.add_inbound(token, 20_000_000, U256::from(150_000), snd1);
 
-        profile.prune_old(20_000_000, WINDOWS);
-
-        println!("profile is {:?}", profile);
+        profile.advance_sliding_windows(20_000_000, WINDOWS);
 
         let token_metrics = profile.metrics.get(&token).unwrap();
 
@@ -359,7 +359,7 @@ mod tests {
         let rec = addr(2);
         let snd = addr(3);
         sender_high.add_outbound(token, 20_000_000, U256::from(900_000), rec);
-        sender_high.prune_old(20_000_000, WINDOWS);
+        sender_high.advance_sliding_windows(20_000_000, WINDOWS);
 
         let sum_limits = vec![U256::from(1_000_000), U256::from(5_000_000), U256::from(20_000_000)];  // daily/weekly/monthly outbound
         let inbound_sum_limits = vec![U256::from(600_000), U256::from(3_000_000), U256::from(10_000_000)];  // inbound (unused for sender)
@@ -389,7 +389,7 @@ mod tests {
         // Non-exceed: Low initial sender profile
         let mut sender_low = AccountProfile::new(addr(1), 20_000_000);
         sender_low.add_outbound(token, 20_000_000, U256::from(50_000), rec);
-        sender_low.prune_old(20_000_000, WINDOWS);
+        sender_low.advance_sliding_windows(20_000_000, WINDOWS);
         assert!(!sender_low.would_exceed_limits(token, new_amount, new_rec, new_snd, WINDOWS, &rules, true),
                 "Should not exceed outbound with lower initial (50k + 200k < 1M daily)");
 
@@ -398,12 +398,12 @@ mod tests {
         for i in 0..4 {  // Add 4 unique recipients to make current=4
             sender_near_limit.add_outbound(token, 20_000_000, U256::from(10_000), addr(i as u8 + 2));
         }
-        sender_near_limit.prune_old(20_000_000, WINDOWS);
+        sender_near_limit.advance_sliding_windows(20_000_000, WINDOWS);
 
         // High initial receiver profile (inbound) - exceeds sum
         let mut receiver_high = AccountProfile::new(addr(4), 20_000_000);
         receiver_high.add_inbound(token, 20_000_000, U256::from(500_000), snd);
-        receiver_high.prune_old(20_000_000, WINDOWS);
+        receiver_high.advance_sliding_windows(20_000_000, WINDOWS);
 
         // Should exceed daily inbound sum (receiver perspective)
         assert!(receiver_high.would_exceed_limits(token, new_amount, new_rec, new_snd, WINDOWS, &rules, false),
@@ -412,7 +412,7 @@ mod tests {
         // Non-exceed: Low initial receiver profile
         let mut receiver_low = AccountProfile::new(addr(4), 20_000_000);
         receiver_low.add_inbound(token, 20_000_000, U256::from(50_000), snd);
-        receiver_low.prune_old(20_000_000, WINDOWS);
+        receiver_low.advance_sliding_windows(20_000_000, WINDOWS);
         assert!(!receiver_low.would_exceed_limits(token, new_amount, new_rec, new_snd, WINDOWS, &rules, false),
                 "Should not exceed inbound with lower initial (50k + 200k < 600k daily)");
 

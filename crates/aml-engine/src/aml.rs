@@ -127,7 +127,7 @@ impl AmlEvaluator {
     pub fn fetch_profile_mut(&mut self, addr: Address, block_number: u64) -> &mut AccountProfile {
         if self.latest_profiles.contains(&addr) {
             let profile = self.latest_profiles.get_mut(&addr).unwrap();
-            profile.prune_old(block_number, WINDOWS);
+            profile.advance_sliding_windows(block_number, WINDOWS);
             return profile;
         }
 
@@ -135,7 +135,7 @@ impl AmlEvaluator {
         let mut profile = self.db.load_profile(&addr)
             .map(AccountProfile::from)
             .unwrap_or_else(|| AccountProfile::new(addr, block_number));
-        profile.prune_old(block_number, WINDOWS);
+        profile.advance_sliding_windows(block_number, WINDOWS);
 
         // Push into LRU, evict if necessary
         if let Some((evicted_addr, evicted_profile)) = self.latest_profiles.push(addr, profile) {
@@ -152,7 +152,7 @@ impl AmlEvaluator {
         if let Some(profile) = self.latest_profiles.peek(&addr) {
             let mut snapshot = profile.clone();
             if snapshot.last_update_block < block_number {
-                snapshot.prune_old(block_number, WINDOWS);
+                snapshot.advance_sliding_windows(block_number, WINDOWS);
             }
             return snapshot;
         }
@@ -162,7 +162,7 @@ impl AmlEvaluator {
             .map(AccountProfile::from)
             .unwrap_or_else(|| AccountProfile::new(addr, block_number));
 
-        profile.prune_old(block_number, WINDOWS);
+        profile.advance_sliding_windows(block_number, WINDOWS);
         profile
     }
 
@@ -191,9 +191,6 @@ impl AmlEvaluator {
         // Load recipient profile
         let mut recipient_profile = self.mempool_profiles.get(&recipient).cloned()
             .unwrap_or_else(|| self.fetch_profile_owned(recipient, block_number));
-
-        println!("sender profile is {:?}", sender_profile);
-        println!("recipient profile is {:?}", recipient_profile);
 
         let reason = self.check_compliance_internal(token, &sender_profile, &recipient_profile, amount, block_number);
 
@@ -470,7 +467,7 @@ mod tests {
 
             let profile = evaluator.fetch_profile_mut(addr1, block_num);
             // Modify something to ensure it's different
-            profile.prune_old(block_num, WINDOWS);
+            profile.advance_sliding_windows(block_num, WINDOWS);
 
             // Add another address to force eviction of addr1
             evaluator.fetch_profile_mut(addr(2), block_num);
