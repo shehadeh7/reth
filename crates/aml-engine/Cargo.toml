@@ -48,6 +48,7 @@ paste = { workspace = true, optional = true }
 proptest = { workspace = true, optional = true }
 proptest-arbitrary-interop = { workspace = true, optional = true }
 log = "0.4.27"
+petgraph = "0.8.3"
 
 [dev-dependencies]
 reth-provider = { workspace = true, features = ["test-utils"] }
