@@ -690,25 +690,11 @@ where
 
         // Run AML batch check
         let aml_inputs = aml_txs.iter().map(|&(_, t, s, r, a)| (t, s, r, a)).collect::<Vec<_>>();
-        let aml_results = aml_evaluator.check_compliance_batch(&aml_inputs, block.number());
+        let aml_result = aml_evaluator.check_compliance_batch(&aml_inputs, block.number(), block.parent_hash());
 
         drop(aml_evaluator); // release lock ASAP
 
-
-        if aml_results.iter().any(|(compliant, _)| !compliant) {
-            for ((token, sender, recipient, amount), (compliant, reason)) in aml_inputs.iter().zip(aml_results.iter()) {
-                if !compliant {
-                    error!(
-                    target: "engine::tree",
-                    ?sender,
-                    ?recipient,
-                    ?amount,
-                    ?reason,
-                    block_hash=?block.hash(),
-                    "AML consensus rule failed"
-                    );
-                }
-            }
+        if !aml_result {
             return Err(ConsensusError::Other("AML consensus failed".to_string()));
         }
 

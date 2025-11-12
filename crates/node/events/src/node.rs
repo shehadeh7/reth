@@ -281,13 +281,10 @@ impl NodeState {
                     .expect("poisoned lock");
 
                 if let Some(receipts) = executed.execution_output.receipts.get(0) {
-                    let mut updates = Vec::new();
+                    let mut all_txs = Vec::new();
+                    let mut successful_indices = Vec::new();
 
-                    for (tx, receipt) in block.body().transactions().iter().zip(receipts) {
-                        if !receipt.status() {
-                            continue;
-                        }
-
+                    for (tx_index, (tx, receipt)) in block.body().transactions().iter().zip(receipts).enumerate() {
                         let tx_recovered = tx.try_clone_into_recovered_unchecked().unwrap();
 
                         // skip non-transfer
@@ -306,12 +303,26 @@ impl NodeState {
                                 continue;
                             }
 
-                            updates.push((token, sender, recipient, amount));
+                            // Track the index in all_txs where we add this transaction
+                            let current_index = all_txs.len();
+                            all_txs.push((sender, recipient, amount));
+
+                            // Only add to successful_indices if the receipt shows success
+                            if receipt.status() {
+                                successful_indices.push(current_index);
+                            }
                         }
                     }
 
-                    // Batch update all profiles at once
-                    aml_evaluator.update_profiles_batch(&updates, block.number());
+                    // Commit block with all transactions and successful indices
+                    if !all_txs.is_empty() {
+                        aml_evaluator.update_profiles_batch(
+                            block.number(),
+                            block.parent_hash(),
+                            &all_txs,
+                            &successful_indices,
+                        );
+                    }
                 }
             }
             BeaconConsensusEngineEvent::CanonicalChainCommitted(head, elapsed) => {

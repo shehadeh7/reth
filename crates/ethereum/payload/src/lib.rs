@@ -339,7 +339,7 @@ where
                 let recipient = decoded.to;
                 let amount = decoded.amount;
 
-                let (status, reason) = aml_evaluator.check_mempool_tx(token_address, sender, recipient, amount, block_number);
+                let (status, reason) = aml_evaluator.check_mempool_tx(token_address, sender, recipient, amount, block_number, parent_header.hash());
 
                 if !status {
                     print!("Blocked by AML: {:?}", reason);

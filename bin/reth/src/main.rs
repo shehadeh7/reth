@@ -25,13 +25,9 @@ fn main() {
     if let Err(err) =
         Cli::<EthereumChainSpecParser, RessArgs>::parse().run(async move |builder, ress_args| {
             // TODO: (ms) move initialization to properly handle block history (initialize from block X onwards)
-            let dir = tempdir().unwrap();
-            let db_path = dir.path().join("aml_db"); // for testing purposes, keep tempdir
-            
-            let db = AmlDb::new(db_path.to_str().unwrap());
             
             info!("launching aml evaluator");
-            match AML_EVALUATOR.set(RwLock::new(AmlEvaluator::new(db, 1000))) {
+            match AML_EVALUATOR.set(RwLock::new(AmlEvaluator::new())) {
                 Ok(()) => {
                     // Successfully initialized
                     info!("AML_EVALUATOR initialized");

@@ -1909,58 +1909,53 @@ where
                 })
                 .collect::<Vec<_>>();
 
-            let mut old_blocks_updates = Vec::new();
-            let mut new_blocks_updates = Vec::new();
+            // Build old_blocks (just numbers)
+            let old_blocks: Vec<u64> = old.iter()
+                .map(|block| block.recovered_block().number())
+                .collect();
 
-            for block in &old {
-                let mut updates = Vec::new();
+            let mut new_blocks = Vec::new();
+            for block in new.iter() {
+                let mut all_txs = Vec::new();
+                let mut successful_indices = Vec::new();
+
                 if let Some(receipts) = block.execution_output.receipts.get(0) {
                     for (tx, receipt) in block.block.recovered_block.transactions_recovered().zip(receipts) {
-                        if !receipt.status() { continue; }
-
                         let tx_recovered = tx.try_clone_into_recovered_unchecked().unwrap();
+
                         if tx_recovered.inner().function_selector() != Some(&Selector::from(hex!("a9059cbb"))) {
                             continue;
                         }
 
                         if let Ok(decoded) = transferCall::abi_decode(&tx_recovered.inner().input()) {
                             let token = tx_recovered.to().unwrap();
+                            let sender = tx_recovered.signer();
+                            let recipient = decoded.to;
+                            let amount = decoded.amount;
 
-                            // Only include if contract supports AML
-                            if aml_evaluator.aml_support_cache.get(&token) == Some(&true) {
-                                updates.push((token, tx_recovered.signer(), decoded.to, decoded.amount));
+                            if aml_evaluator.aml_support_cache.get(&token) != Some(&true) {
+                                continue;
+                            }
+
+                            let current_index = all_txs.len();
+                            all_txs.push((sender, recipient, amount));
+
+                            if receipt.status() {
+                                successful_indices.push(current_index);
                             }
                         }
                     }
                 }
-                old_blocks_updates.push((block.recovered_block().number(), updates));
+
+                new_blocks.push((
+                    block.recovered_block().number(),
+                    block.recovered_block().parent_hash(),
+                    all_txs,
+                    successful_indices,
+                ));
             }
 
-            for block in new.iter() {
-                let mut updates = Vec::new();
-                if let Some(receipts) =  block.execution_output.receipts.get(0) {
-                    for (tx, receipt) in block.block.recovered_block.transactions_recovered().zip(receipts) {
-                        if !receipt.status() { continue; }
-
-                        let tx_recovered = tx.try_clone_into_recovered_unchecked().unwrap();
-                        if tx_recovered.inner().function_selector() != Some(&Selector::from(hex!("a9059cbb"))) {
-                            continue;
-                        }
-
-                        if let Ok(decoded) = transferCall::abi_decode(&tx_recovered.inner().input()) {
-                            let token = tx_recovered.to().unwrap();
-
-                            // Only include if contract supports AML
-                            if aml_evaluator.aml_support_cache.get(&token) == Some(&true) {
-                                updates.push((token, tx_recovered.signer(), decoded.to, decoded.amount));
-                            }
-                        }
-                    }
-                }
-                new_blocks_updates.push((block.recovered_block().number(), updates));
-            }
-
-            aml_evaluator.handle_reorg(&old_blocks_updates, &new_blocks_updates);
+            aml_evaluator.handle_reorg(&old_blocks, &new_blocks);
 
             self.reinsert_reorged_blocks(old);
         }
