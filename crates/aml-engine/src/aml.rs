@@ -57,12 +57,14 @@ pub struct AmlEvaluator {
 
 impl AmlEvaluator {
     pub fn new() -> Self {
-        let motif_config: Config =  Config {
-            window_blocks: 7200,
-            fan_in_count_threshold: 100,
-            fan_in_sum_threshold: DAILY_LIMIT.saturating_add(DAILY_LIMIT),
-            scatter_gather_threshold: DAILY_LIMIT.saturating_mul(U256::from(3)),
-            gather_scatter_threshold: DAILY_LIMIT.saturating_mul(U256::from(3)),
+        let motif_config: Config = Config {
+            window_blocks: 10,  // Small window for testing
+            fan_in_count_threshold: 3,  // Flag after 3 distinct senders
+            fan_in_sum_threshold: U256::from(1000),  // 1000 wei total
+            scatter_gather_threshold: U256::from(500),  // 500 wei through multiple paths
+            gather_scatter_threshold: U256::from(500),  // 500 wei through multiple paths
+            fan_out_count_threshold: 3,
+            fan_out_sum_threshold: U256::from(1000),
             enable_peel_chain_detection: true,
         };
 
@@ -82,7 +84,7 @@ impl AmlEvaluator {
         parent_hash: B256,
     ) -> (bool, Option<&'static str>) {
         if sender == recipient {
-            return (true, None); // no-op
+            return (false, None); // no-op
         }
 
         // Ignore string return for now
@@ -95,6 +97,9 @@ impl AmlEvaluator {
         block_number: u64,
         parent_hash: B256,
     ) -> bool {
+        if transactions.is_empty() {
+            return false;
+        }
         let filtered: Vec<(Address, Address, U256)> =
             transactions.iter().map(|&(_, a, b, v)| (a, b, v)).collect();
         self.motif_detector.consensus_validate_block(&filtered, block_number, parent_hash)
@@ -152,14 +157,12 @@ impl AmlEvaluator {
         let account = match state.basic_account(&contract_address) {
             Ok(Some(acc)) => acc,
             _ => {
-                self.aml_support_cache.insert(contract_address, false);
                 return false;
             }
         };
 
         // Check if contract exists
         if account.bytecode_hash == Some(KECCAK_EMPTY) {
-            self.aml_support_cache.insert(contract_address, false);
             return false;
         }
 
@@ -167,7 +170,6 @@ impl AmlEvaluator {
         let code = match state.bytecode_by_hash(&account.bytecode_hash.unwrap()) {
             Ok(Some(code)) => code,
             _ => {
-                self.aml_support_cache.insert(contract_address, false);
                 return false;
             }
         };

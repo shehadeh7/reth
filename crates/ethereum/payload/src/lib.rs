@@ -36,6 +36,7 @@ use reth_transaction_pool::{
 };
 use revm::context_interface::Block as _;
 use std::sync::Arc;
+use std::time::Instant;
 use alloy_sol_types::{sol, SolCall};
 use tracing::{debug, trace, warn};
 use aml_engine::aml::AML_EVALUATOR;
@@ -329,7 +330,6 @@ where
         if pool_tx.transaction.function_selector() == Some(&Selector::from(hex!("a9059cbb"))) {
             if let Ok(decoded) = transferCall::abi_decode(&pool_tx.transaction.input()) {
                 let token_address = pool_tx.to().unwrap();
-
                 // Check if contract opted into AML
                 if !aml_evaluator.supports_aml_interface(token_address, &state_provider) {
                     // Contract doesn't support AML, skip validation
@@ -339,10 +339,15 @@ where
                 let recipient = decoded.to;
                 let amount = decoded.amount;
 
-                let (status, reason) = aml_evaluator.check_mempool_tx(token_address, sender, recipient, amount, block_number, parent_header.hash());
-
-                if !status {
-                    print!("Blocked by AML: {:?}", reason);
+                let start = Instant::now();
+                let (failed_aml, reason) = aml_evaluator.check_mempool_tx(token_address, sender, recipient, amount, block_number, parent_header.hash());
+                let elapsed = start.elapsed();
+                println!(
+                    "AML check_mempool_tx took {:?}",
+                    elapsed,
+                );
+                if failed_aml {
+                    print!("Transaction hash {:?} failed", pool_tx.transaction.hash());
                     best_txs.mark_invalid(
                         &pool_tx,
                         InvalidPoolTransactionError::AMLRulesFailed,

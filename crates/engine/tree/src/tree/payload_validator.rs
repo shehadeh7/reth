@@ -690,11 +690,11 @@ where
 
         // Run AML batch check
         let aml_inputs = aml_txs.iter().map(|&(_, t, s, r, a)| (t, s, r, a)).collect::<Vec<_>>();
-        let aml_result = aml_evaluator.check_compliance_batch(&aml_inputs, block.number(), block.parent_hash());
+        let aml_suspicious = aml_evaluator.check_compliance_batch(&aml_inputs, block.number(), block.parent_hash());
 
         drop(aml_evaluator); // release lock ASAP
 
-        if !aml_result {
+        if aml_suspicious {
             return Err(ConsensusError::Other("AML consensus failed".to_string()));
         }
 

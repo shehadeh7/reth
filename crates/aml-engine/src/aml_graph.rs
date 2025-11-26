@@ -21,6 +21,8 @@ pub struct Config {
     /// Gather-scatter: threshold for total flow to sink through multiple destinations
     pub gather_scatter_threshold: U256,
     pub enable_peel_chain_detection: bool,
+    pub fan_out_count_threshold: u64,
+    pub fan_out_sum_threshold: U256,
 }
 
 /// ---------------------------------------------------------------------------
@@ -85,9 +87,11 @@ impl AMLMotifDetector {
         let to_idx = self.get_or_add_node(to);
         let eidx = self.graph.add_edge(from_idx, to_idx, (amount, block));
 
-        let suspicious = self.check_motifs_against(to_idx, block);
+        // Check both recipient and sender patterns
+        let suspicious_to = self.check_motifs_against(to_idx, block);
+        let suspicious_from = self.check_motifs_from(from_idx, block);
 
-        if suspicious {
+        if suspicious_to || suspicious_from {
             self.graph.remove_edge(eidx);
             return true;
         }
@@ -121,14 +125,21 @@ impl AMLMotifDetector {
             // Proposer validating its own block — graph already has edges.
             // Just run motif checks without modifying graph.
             let mut recipients = HashSet::new();
-            for &(_, to, _) in txs {
+            let mut senders = HashSet::new();
+
+            for &(from, to, _) in txs {
                 recipients.insert(self.get_or_add_node(to));
+                senders.insert(self.get_or_add_node(from));
             }
 
             suspicious = recipients
                 .iter()
-                .any(|&to_idx| self.check_motifs_against(to_idx, block));
+                .any(|&to_idx| self.check_motifs_against(to_idx, block))
+                || senders
+                .iter()
+                .any(|&from_idx| self.check_motifs_from(from_idx, block));
         } else {
+            // Validator path: add edges temporarily
             let mut temp_edges = Vec::new();
 
             for &(from, to, amount) in txs {
@@ -139,13 +150,19 @@ impl AMLMotifDetector {
             }
 
             let mut recipients = HashSet::new();
-            for &(_, to, _) in txs {
+            let mut senders = HashSet::new();
+
+            for &(from, to, _) in txs {
                 recipients.insert(self.get_or_add_node(to));
+                senders.insert(self.get_or_add_node(from));
             }
 
             suspicious = recipients
                 .iter()
-                .any(|&to_idx| self.check_motifs_against(to_idx, block));
+                .any(|&to_idx| self.check_motifs_against(to_idx, block))
+                || senders
+                .iter()
+                .any(|&from_idx| self.check_motifs_from(from_idx, block));
 
             // ALWAYS remove temp edges after checking
             for eidx in temp_edges {
@@ -251,7 +268,7 @@ impl AMLMotifDetector {
     fn check_motifs_against(&self, to_idx: NodeIndex, current_block: u64) -> bool {
         // 1. Fan-in (smurfing): Multiple distinct senders to one address
         let mut fan_in_count = 0u64;
-        let mut fan_in_sum = U256::from(0);;
+        let mut fan_in_sum = U256::from(0);
         let mut seen = HashSet::new();
 
         for neighbor in self.graph.neighbors_directed(to_idx, Incoming) {
@@ -260,7 +277,7 @@ impl AMLMotifDetector {
             }
 
             // Sum ALL edges from this neighbor within the window
-            let mut neighbor_total = U256::from(0);;
+            let mut neighbor_total = U256::from(0);
             for edge_ref in self.graph.edges_connecting(neighbor, to_idx) {
                 let (amt, blk) = *edge_ref.weight();
                 if current_block >= blk && current_block - blk <= self.config.window_blocks {
@@ -268,7 +285,7 @@ impl AMLMotifDetector {
                 }
             }
 
-            if neighbor_total > 0 {
+            if neighbor_total > U256::ZERO {
                 fan_in_count += 1;
                 fan_in_sum += neighbor_total;
             }
@@ -277,130 +294,182 @@ impl AMLMotifDetector {
         if fan_in_count > self.config.fan_in_count_threshold
             || fan_in_sum > self.config.fan_in_sum_threshold
         {
+            println!("Fan_in_count or fan_in_sum exceeded");
             return true;
         }
 
         // 2. Scatter-Gather: single source → multiple intermediaries → to_idx
         // Pattern: One source splits funds through 2+ intermediaries that converge at destination
-        let mut source_data = HashMap::<NodeIndex, (HashSet<NodeIndex>, U256)>::new(); // source -> (intermediaries, total_flow)
+        let mut source_data = HashMap::<NodeIndex, (HashSet<NodeIndex>, U256)>::new();
 
         for inter in self.graph.neighbors_directed(to_idx, Incoming) {
-            // Calculate total flow from intermediary to destination
-            let mut inter_to_dest_sum = U256::from(0);
+            // Calculate time window for intermediary → destination
             let mut inter_to_dest_min_block = u64::MAX;
+            let mut inter_to_dest_max_block = 0u64;
+            let mut inter_to_dest_sum = U256::from(0);
 
             for edge_ref in self.graph.edges_connecting(inter, to_idx) {
                 let (amt, blk) = *edge_ref.weight();
                 if current_block >= blk && current_block - blk <= self.config.window_blocks {
                     inter_to_dest_sum += amt;
                     inter_to_dest_min_block = inter_to_dest_min_block.min(blk);
+                    inter_to_dest_max_block = inter_to_dest_max_block.max(blk);
                 }
             }
 
-            if inter_to_dest_sum == 0 {
+            if inter_to_dest_sum == U256::ZERO {
                 continue;
             }
 
             // Look at sources feeding this intermediary
             for src in self.graph.neighbors_directed(inter, Incoming) {
-                let mut src_to_inter_sum = U256::from(0);
+                // Calculate time window for source → intermediary
+                let mut src_to_inter_min_block = u64::MAX;
                 let mut src_to_inter_max_block = 0u64;
+                let mut src_to_inter_sum = U256::from(0);
 
                 for edge_ref in self.graph.edges_connecting(src, inter) {
                     let (amt, blk) = *edge_ref.weight();
                     if current_block >= blk && current_block - blk <= self.config.window_blocks {
                         src_to_inter_sum += amt;
+                        src_to_inter_min_block = src_to_inter_min_block.min(blk);
                         src_to_inter_max_block = src_to_inter_max_block.max(blk);
                     }
                 }
 
-                if src_to_inter_sum == 0 {
+                if src_to_inter_sum == U256::ZERO {
                     continue;
                 }
 
-                // Check temporal ordering: source→inter must happen before or at same time as inter→dest
-                if src_to_inter_max_block > inter_to_dest_min_block {
-                    continue; // Causality violation - skip this path
+                // Check if time windows overlap (proper interval overlap check)
+                // Overlap exists if: earliest_first <= latest_second AND earliest_second <= latest_first
+                if src_to_inter_min_block <= inter_to_dest_max_block
+                    && inter_to_dest_min_block <= src_to_inter_max_block
+                {
+                    // Calculate bottleneck flow for this path
+                    let bottleneck = src_to_inter_sum.min(inter_to_dest_sum);
+
+                    let entry = source_data.entry(src).or_insert((HashSet::new(), U256::from(0)));
+                    entry.0.insert(inter); // Track which intermediary
+                    entry.1 += bottleneck; // Accumulate total flow from this source
                 }
-
-                // Calculate bottleneck flow for this path
-                let bottleneck = src_to_inter_sum.min(inter_to_dest_sum);
-
-                let entry = source_data.entry(src).or_insert((HashSet::new(), U256::from(0)));
-                entry.0.insert(inter); // Track which intermediary
-                entry.1 += bottleneck; // Accumulate total flow from this source
             }
         }
 
         // Check if any source used 2+ intermediaries with significant total flow
         for (_src, (intermediaries, total_flow)) in source_data.iter() {
             if intermediaries.len() >= 2 && *total_flow > self.config.scatter_gather_threshold {
+                println!("Scatter-gather pattern");
                 return true;
             }
         }
 
-        // 3. Gather-Scatter: to_idx → multiple destinations → single sink
-        // Pattern: Funds from to_idx split through 2+ destinations that converge at one sink
-        let mut sink_data = HashMap::<NodeIndex, (HashSet<NodeIndex>, U256)>::new(); // sink -> (destinations, total_flow)
-
-        for dest in self.graph.neighbors_directed(to_idx, Outgoing) {
-            // Calculate total flow from to_idx to this destination
-            let mut to_dest_sum = U256::from(0);
-            let mut to_dest_max_block = 0u64;
-
-            for edge_ref in self.graph.edges_connecting(to_idx, dest) {
-                let (amt, blk) = *edge_ref.weight();
-                if current_block >= blk && current_block - blk <= self.config.window_blocks {
-                    to_dest_sum += amt;
-                    to_dest_max_block = to_dest_max_block.max(blk);
-                }
+        // 3. Peel chain detection
+        if self.config.enable_peel_chain_detection {
+            if self.detect_peel_chain(to_idx, current_block) {
+                println!("Peel-chain pattern");
+                return true;
             }
+        }
 
-            if to_dest_sum == 0 {
+        false
+    }
+
+    /// Checks sender-centric motifs for AML patterns.
+    /// Returns true if any suspicious pattern is detected.
+    fn check_motifs_from(&self, from_idx: NodeIndex, current_block: u64) -> bool {
+        // 1. Fan-Out (Dispersal): Single sender → multiple distinct receivers
+        let mut fan_out_count = 0u64;
+        let mut fan_out_sum = U256::from(0);
+        let mut seen = HashSet::new();
+
+        for neighbor in self.graph.neighbors_directed(from_idx, Outgoing) {
+            if !seen.insert(neighbor) {
                 continue;
             }
 
-            // Look at sinks receiving from this destination
-            for sink in self.graph.neighbors_directed(dest, Outgoing) {
-                let mut dest_to_sink_sum = U256::from(0);
-                let mut dest_to_sink_min_block = u64::MAX;
+            let mut neighbor_total = U256::from(0);
+            for edge_ref in self.graph.edges_connecting(from_idx, neighbor) {
+                let (amt, blk) = *edge_ref.weight();
+                if current_block >= blk && current_block - blk <= self.config.window_blocks {
+                    neighbor_total += amt;
+                }
+            }
 
-                for edge_ref in self.graph.edges_connecting(dest, sink) {
+            if neighbor_total > U256::ZERO {
+                fan_out_count += 1;
+                fan_out_sum += neighbor_total;
+            }
+        }
+
+        if fan_out_count > self.config.fan_out_count_threshold
+            || fan_out_sum > self.config.fan_out_sum_threshold
+        {
+            println!("Fan-out count or sum exceeded");
+            return true;
+        }
+
+        // 2. Gather-scatter (hub detection)
+        // Pattern: Multiple sources → from_idx → receiver (from_idx acts as mixing hub)
+        let mut receiver_data = HashMap::<NodeIndex, (HashSet<NodeIndex>, U256)>::new();
+
+        for source in self.graph.neighbors_directed(from_idx, Incoming) {
+            // Calculate time window for source → sender (from_idx)
+            let mut source_to_sender_min_block = u64::MAX;
+            let mut source_to_sender_max_block = 0u64;
+            let mut source_to_sender_sum = U256::from(0);
+
+            for edge_ref in self.graph.edges_connecting(source, from_idx) {
+                let (amt, blk) = *edge_ref.weight();
+                if current_block >= blk && current_block - blk <= self.config.window_blocks {
+                    source_to_sender_sum += amt;
+                    source_to_sender_min_block = source_to_sender_min_block.min(blk);
+                    source_to_sender_max_block = source_to_sender_max_block.max(blk);
+                }
+            }
+
+            if source_to_sender_sum == U256::ZERO {
+                continue;
+            }
+
+            // Look at receivers from the sender
+            for recv in self.graph.neighbors_directed(from_idx, Outgoing) {
+                // Calculate time window for sender (from_idx) → receiver
+                let mut sender_to_recv_min_block = u64::MAX;
+                let mut sender_to_recv_max_block = 0u64;
+                let mut sender_to_recv_sum = U256::from(0);
+
+                for edge_ref in self.graph.edges_connecting(from_idx, recv) {
                     let (amt, blk) = *edge_ref.weight();
                     if current_block >= blk && current_block - blk <= self.config.window_blocks {
-                        dest_to_sink_sum += amt;
-                        dest_to_sink_min_block = dest_to_sink_min_block.min(blk);
+                        sender_to_recv_sum += amt;
+                        sender_to_recv_min_block = sender_to_recv_min_block.min(blk);
+                        sender_to_recv_max_block = sender_to_recv_max_block.max(blk);
                     }
                 }
 
-                if dest_to_sink_sum == 0 {
+                if sender_to_recv_sum == U256::ZERO {
                     continue;
                 }
 
-                // Check temporal ordering: to_idx→dest must happen before or at same time as dest→sink
-                if to_dest_max_block > dest_to_sink_min_block {
-                    continue; // Causality violation - skip this path
+                // Check if time windows overlap (proper interval overlap check)
+                // Overlap exists if: earliest_first <= latest_second AND earliest_second <= latest_first
+                if source_to_sender_min_block <= sender_to_recv_max_block
+                    && sender_to_recv_min_block <= source_to_sender_max_block
+                {
+                    let bottleneck = source_to_sender_sum.min(sender_to_recv_sum);
+
+                    let entry = receiver_data.entry(recv).or_insert((HashSet::new(), U256::from(0)));
+                    entry.0.insert(source); // Track which source
+                    entry.1 += bottleneck;
                 }
-
-                // Calculate bottleneck flow for this path
-                let bottleneck = to_dest_sum.min(dest_to_sink_sum);
-
-                let entry = sink_data.entry(sink).or_insert((HashSet::new(), U256::from(0)));
-                entry.0.insert(dest); // Track which destination
-                entry.1 += bottleneck; // Accumulate total flow to this sink
             }
         }
 
-        // Check if any sink received through 2+ destinations with significant total flow
-        for (_sink, (destinations, total_flow)) in sink_data.iter() {
-            if destinations.len() >= 2 && *total_flow > self.config.gather_scatter_threshold {
-                return true;
-            }
-        }
-
-        // 4. Peel chain detection
-        if self.config.enable_peel_chain_detection {
-            if self.detect_peel_chain(to_idx, current_block) {
+        // Check if any receiver gets funds from 2+ sources through this sender
+        for (_recv, (sources, total_flow)) in receiver_data.iter() {
+            if sources.len() >= 2 && *total_flow > self.config.gather_scatter_threshold {
+                println!("Gather-scatter pattern (hub behavior)");
                 return true;
             }
         }
@@ -527,6 +596,8 @@ mod tests {
             scatter_gather_threshold: U256::from(500),
             gather_scatter_threshold: U256::from(500),
             enable_peel_chain_detection: true,
+            fan_out_count_threshold: 5,
+            fan_out_sum_threshold: U256::from(500),
         }
     }
 
@@ -538,6 +609,8 @@ mod tests {
             scatter_gather_threshold: U256::from(5),
             gather_scatter_threshold: U256::from(5),
             enable_peel_chain_detection: false,
+            fan_out_count_threshold: 5,
+            fan_out_sum_threshold: U256::from(500),
         }
     }
 
