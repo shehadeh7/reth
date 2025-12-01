@@ -65,7 +65,6 @@ impl AmlEvaluator {
             gather_scatter_threshold: U256::from(500),  // 500 wei through multiple paths
             fan_out_count_threshold: 3,
             fan_out_sum_threshold: U256::from(1000),
-            enable_peel_chain_detection: true,
         };
 
         Self {

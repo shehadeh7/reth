@@ -20,7 +20,6 @@ pub struct Config {
     pub scatter_gather_threshold: U256,
     /// Gather-scatter: threshold for total flow to sink through multiple destinations
     pub gather_scatter_threshold: U256,
-    pub enable_peel_chain_detection: bool,
     pub fan_out_count_threshold: u64,
     pub fan_out_sum_threshold: U256,
 }
@@ -319,11 +318,9 @@ impl AMLMotifDetector {
                     continue;
                 }
 
-                // Check if time windows overlap (proper interval overlap check)
-                // Overlap exists if: earliest_first <= latest_second AND earliest_second <= latest_first
-                if src_to_inter_min_block <= inter_to_dest_max_block
-                    && inter_to_dest_min_block <= src_to_inter_max_block
-                {
+                // Check temporal ordering: latest source→inter must be before or at latest inter→dest
+                // This ensures source sent to intermediary before intermediary forwarded to dest
+                if src_to_inter_max_block <= inter_to_dest_max_block {
                     // Calculate bottleneck flow for this path
                     let bottleneck = src_to_inter_sum.min(inter_to_dest_sum);
 
@@ -338,14 +335,6 @@ impl AMLMotifDetector {
         for (_src, (intermediaries, total_flow)) in source_data.iter() {
             if intermediaries.len() >= 2 && *total_flow > self.config.scatter_gather_threshold {
                 println!("Scatter-gather pattern");
-                return true;
-            }
-        }
-
-        // 3. Peel chain detection
-        if self.config.enable_peel_chain_detection {
-            if self.detect_peel_chain(to_idx, current_block) {
-                println!("Peel-chain pattern");
                 return true;
             }
         }
@@ -430,11 +419,8 @@ impl AMLMotifDetector {
                     continue;
                 }
 
-                // Check if time windows overlap (proper interval overlap check)
-                // Overlap exists if: earliest_first <= latest_second AND earliest_second <= latest_first
-                if source_to_sender_min_block <= sender_to_recv_max_block
-                    && sender_to_recv_min_block <= source_to_sender_max_block
-                {
+                // Check temporal ordering: latest source→sender must be before or at latest sender→recv
+                if source_to_sender_max_block <= sender_to_recv_max_block {
                     let bottleneck = source_to_sender_sum.min(sender_to_recv_sum);
 
                     let entry = receiver_data.entry(recv).or_insert((HashSet::new(), U256::from(0)));
@@ -448,88 +434,6 @@ impl AMLMotifDetector {
         for (_recv, (sources, total_flow)) in receiver_data.iter() {
             if sources.len() >= 2 && *total_flow > self.config.gather_scatter_threshold {
                 println!("Gather-scatter pattern (hub behavior)");
-                return true;
-            }
-        }
-
-        false
-    }
-
-    /// Detects peel chains: systematic skimming pattern
-    /// Returns true if suspicious peel chain detected
-    fn detect_peel_chain(&self, to_idx: NodeIndex, current_block: u64) -> bool {
-        let mut chain_depth = 0;
-        let mut current = to_idx;
-        let mut peel_percentages = Vec::new();
-
-        for _ in 0..10 { // Max 10 hops
-            // Find single predecessor (peel chains are linear)
-            let predecessors: Vec<_> = self.graph.neighbors_directed(current, Incoming)
-                .filter(|&pred| {
-                    self.graph.edges_connecting(pred, current).any(|e| {
-                        let (_, blk) = *e.weight();
-                        current_block >= blk && current_block - blk <= self.config.window_blocks
-                    })
-                })
-                .collect();
-
-            if predecessors.len() != 1 {
-                break; // Not a linear chain
-            }
-
-            let pred = predecessors[0];
-
-            // Calculate what percentage was "kept" vs "forwarded"
-            let mut amount_to_current = U256::from(0);
-            for edge_ref in self.graph.edges_connecting(pred, current) {
-                let (amt, blk) = *edge_ref.weight();
-                if current_block >= blk && current_block - blk <= self.config.window_blocks {
-                    amount_to_current += amt;
-                }
-            }
-
-            // Check if pred sent to other addresses (peeling)
-            let mut amount_to_others = U256::from(0);
-            let mut other_recipients = 0;
-            for other in self.graph.neighbors_directed(pred, Outgoing) {
-                if other == current {
-                    continue;
-                }
-                other_recipients += 1;
-                for edge_ref in self.graph.edges_connecting(pred, other) {
-                    let (amt, blk) = *edge_ref.weight();
-                    if current_block >= blk && current_block - blk <= self.config.window_blocks {
-                        amount_to_others += amt;
-                    }
-                }
-            }
-
-            // If no peeling occurred, not part of peel chain
-            if other_recipients == 0 || amount_to_others == U256::from(0) {
-                break;
-            }
-
-            // Calculate peel percentage
-            let total = amount_to_current + amount_to_others;
-            if total > U256::from(0) {
-                let peel_pct = (amount_to_others * U256::from(100)) / total;
-                peel_percentages.push(peel_pct);
-                chain_depth += 1;
-                current = pred;
-            } else {
-                break;
-            }
-        }
-
-        // Suspicious if:
-        // 1. Chain is at least 3 hops long
-        // 2. Peel percentages are consistently small (2-15%)
-        if chain_depth >= 3 {
-            let consistent_peeling = peel_percentages.iter().all(|&pct| {
-                pct >= U256::from(2) && pct <= U256::from(15)
-            });
-
-            if consistent_peeling {
                 return true;
             }
         }
@@ -573,7 +477,6 @@ mod tests {
             fan_in_sum_threshold: U256::from(1000),
             scatter_gather_threshold: U256::from(500),
             gather_scatter_threshold: U256::from(500),
-            enable_peel_chain_detection: true,
             fan_out_count_threshold: 5,
             fan_out_sum_threshold: U256::from(500),
         }
@@ -586,7 +489,6 @@ mod tests {
             fan_in_sum_threshold: U256::from(10),
             scatter_gather_threshold: U256::from(5),
             gather_scatter_threshold: U256::from(5),
-            enable_peel_chain_detection: false,
             fan_out_count_threshold: 5,
             fan_out_sum_threshold: U256::from(500),
         }
@@ -880,93 +782,6 @@ mod tests {
         g.graph.add_edge(d2_idx, s_idx, (U256::from(5), 6));
 
         assert!(g.check_motifs_against(a_idx, 7));
-    }
-
-    // ========================================================================
-    // Peel Chain Tests
-    // ========================================================================
-
-    #[test]
-    fn test_peel_chain_detection() {
-        let mut detector = AMLMotifDetector::new(Config {
-            enable_peel_chain_detection: true,
-            ..test_config()
-        });
-
-        let a = addr("0xc000000000000000000000000000000000000001");
-        let b = addr("0xc000000000000000000000000000000000000002");
-        let c = addr("0xc000000000000000000000000000000000000003");
-        let d = addr("0xc000000000000000000000000000000000000004");
-        let peel1 = addr("0xc000000000000000000000000000000000000011");
-        let peel2 = addr("0xc000000000000000000000000000000000000012");
-        let peel3 = addr("0xc000000000000000000000000000000000000013");
-
-        let a_idx = detector.get_or_add_node(a);
-        let b_idx = detector.get_or_add_node(b);
-        let c_idx = detector.get_or_add_node(c);
-        let d_idx = detector.get_or_add_node(d);
-        let p1_idx = detector.get_or_add_node(peel1);
-        let p2_idx = detector.get_or_add_node(peel2);
-        let p3_idx = detector.get_or_add_node(peel3);
-
-        // A sends 100: 95 to B, 5 to peel address
-        detector.graph.add_edge(a_idx, b_idx, (U256::from(95), 10));
-        detector.graph.add_edge(a_idx, p1_idx, (U256::from(5), 10));
-
-        // B sends 95: 90 to C, 5 to peel address
-        detector.graph.add_edge(b_idx, c_idx, (U256::from(90), 11));
-        detector.graph.add_edge(b_idx, p2_idx, (U256::from(5), 11));
-
-        // C sends 90: 85 to D, 5 to peel address
-        detector.graph.add_edge(c_idx, d_idx, (U256::from(85), 12));
-        detector.graph.add_edge(c_idx, p3_idx, (U256::from(5), 12));
-
-        // Should detect peel chain at D
-        assert!(detector.check_motifs_against(d_idx, 13));
-    }
-
-    #[test]
-    fn test_peel_chain_not_triggered_for_normal_transfers() {
-        let mut detector = AMLMotifDetector::new(Config {
-            enable_peel_chain_detection: true,
-            ..test_config()
-        });
-
-        let a = addr("0xd000000000000000000000000000000000000001");
-        let b = addr("0xd000000000000000000000000000000000000002");
-        let c = addr("0xd000000000000000000000000000000000000003");
-
-        let a_idx = detector.get_or_add_node(a);
-        let b_idx = detector.get_or_add_node(b);
-        let c_idx = detector.get_or_add_node(c);
-
-        // Normal linear transfer without peeling
-        detector.graph.add_edge(a_idx, b_idx, (U256::from(100), 10));
-        detector.graph.add_edge(b_idx, c_idx, (U256::from(100), 11));
-
-        assert!(!detector.check_motifs_against(c_idx, 12));
-    }
-
-    #[test]
-    fn test_peel_chain_short_chain_not_triggered() {
-        let mut detector = AMLMotifDetector::new(Config {
-            enable_peel_chain_detection: true,
-            ..test_config()
-        });
-
-        let a = addr("0xe000000000000000000000000000000000000001");
-        let b = addr("0xe000000000000000000000000000000000000002");
-        let peel = addr("0xe000000000000000000000000000000000000011");
-
-        let a_idx = detector.get_or_add_node(a);
-        let b_idx = detector.get_or_add_node(b);
-        let p_idx = detector.get_or_add_node(peel);
-
-        // Only 1 hop with peel (need at least 3)
-        detector.graph.add_edge(a_idx, b_idx, (U256::from(95), 10));
-        detector.graph.add_edge(a_idx, p_idx, (U256::from(5), 10));
-
-        assert!(!detector.check_motifs_against(b_idx, 11));
     }
 
     // ========================================================================
@@ -1396,77 +1211,6 @@ mod tests {
         detector.block_commit(block, parent, &txs, &successful_indices);
 
         assert_eq!(detector.graph.edge_count(), 5);
-    }
-
-
-    #[test]
-    fn test_peel_chain_with_varying_percentages() {
-        let mut detector = AMLMotifDetector::new(Config {
-            enable_peel_chain_detection: true,
-            ..test_config()
-        });
-
-        let a = addr("0xff30000000000000000000000000000000000001");
-        let b = addr("0xff30000000000000000000000000000000000002");
-        let c = addr("0xff30000000000000000000000000000000000003");
-        let d = addr("0xff30000000000000000000000000000000000004");
-        let peel1 = addr("0xff30000000000000000000000000000000000011");
-        let peel2 = addr("0xff30000000000000000000000000000000000012");
-        let peel3 = addr("0xff30000000000000000000000000000000000013");
-
-        let a_idx = detector.get_or_add_node(a);
-        let b_idx = detector.get_or_add_node(b);
-        let c_idx = detector.get_or_add_node(c);
-        let d_idx = detector.get_or_add_node(d);
-        let p1_idx = detector.get_or_add_node(peel1);
-        let p2_idx = detector.get_or_add_node(peel2);
-        let p3_idx = detector.get_or_add_node(peel3);
-
-        // Varying peel percentages but all within 2-15% range
-        // A: 97 forward, 3 peel (3%)
-        detector.graph.add_edge(a_idx, b_idx, (U256::from(97), 10));
-        detector.graph.add_edge(a_idx, p1_idx, (U256::from(3), 10));
-
-        // B: 87 forward, 10 peel (10.3%)
-        detector.graph.add_edge(b_idx, c_idx, (U256::from(87), 11));
-        detector.graph.add_edge(b_idx, p2_idx, (U256::from(10), 11));
-
-        // C: 80 forward, 7 peel (8%)
-        detector.graph.add_edge(c_idx, d_idx, (U256::from(80), 12));
-        detector.graph.add_edge(c_idx, p3_idx, (U256::from(7), 12));
-
-        // Should still detect as peel chain
-        assert!(detector.check_motifs_against(d_idx, 13));
-    }
-
-    #[test]
-    fn test_peel_chain_high_percentage_not_detected() {
-        let mut detector = AMLMotifDetector::new(Config {
-            enable_peel_chain_detection: true,
-            ..test_config()
-        });
-
-        let a = addr("0xff40000000000000000000000000000000000001");
-        let b = addr("0xff40000000000000000000000000000000000002");
-        let c = addr("0xff40000000000000000000000000000000000003");
-        let split1 = addr("0xff40000000000000000000000000000000000011");
-        let split2 = addr("0xff40000000000000000000000000000000000012");
-
-        let a_idx = detector.get_or_add_node(a);
-        let b_idx = detector.get_or_add_node(b);
-        let c_idx = detector.get_or_add_node(c);
-        let s1_idx = detector.get_or_add_node(split1);
-        let s2_idx = detector.get_or_add_node(split2);
-
-        // High split percentages (50/50) - not a peel pattern
-        detector.graph.add_edge(a_idx, b_idx, (U256::from(50), 10));
-        detector.graph.add_edge(a_idx, s1_idx, (U256::from(50), 10));
-
-        detector.graph.add_edge(b_idx, c_idx, (U256::from(25), 11));
-        detector.graph.add_edge(b_idx, s2_idx, (U256::from(25), 11));
-
-        // Should NOT detect (percentages too high)
-        assert!(!detector.check_motifs_against(c_idx, 12));
     }
 
     #[test]
