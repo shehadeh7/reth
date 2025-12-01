@@ -25,6 +25,11 @@ pub struct Config {
     pub fan_out_sum_threshold: U256,
 }
 
+enum EdgeDecision {
+    Accept(EdgeIndex),
+    Reject, // edge already removed
+}
+
 /// ---------------------------------------------------------------------------
 /// Main Detector
 /// ---------------------------------------------------------------------------
@@ -63,6 +68,29 @@ impl AMLMotifDetector {
         *self.node_map.entry(addr).or_insert_with(|| self.graph.add_node(addr))
     }
 
+    fn evaluate_edge_incremental(
+        &mut self,
+        from_idx: NodeIndex,
+        to_idx: NodeIndex,
+        amount: U256,
+        block: u64,
+    ) -> EdgeDecision {
+        // 1) Tentatively add the edge
+        let eidx = self.graph.add_edge(from_idx, to_idx, (amount, block));
+
+        // 2) Check both sender and recipient patterns
+        let suspicious_from = self.check_motifs_from(from_idx, block);
+        let suspicious_to = self.check_motifs_against(to_idx, block);
+
+        // 3) Decision & rollback if needed
+        if suspicious_from || suspicious_to {
+            self.graph.remove_edge(eidx);
+            EdgeDecision::Reject
+        } else {
+            EdgeDecision::Accept(eidx)
+        }
+    }
+
     // --------------------------------------------------------------------
     // BLOCK BUILDING: Proposer checks each tx during selection
     // --------------------------------------------------------------------
@@ -77,7 +105,6 @@ impl AMLMotifDetector {
         block: u64,
         parent_hash: B256,
     ) -> bool {
-        // If we're building a different block (number or parent), reset state
         if self.building_block != Some((block, parent_hash)) {
             self.reset_block_building();
             self.building_block = Some((block, parent_hash));
@@ -85,19 +112,14 @@ impl AMLMotifDetector {
 
         let from_idx = self.get_or_add_node(from);
         let to_idx = self.get_or_add_node(to);
-        let eidx = self.graph.add_edge(from_idx, to_idx, (amount, block));
 
-        // Check both recipient and sender patterns
-        let suspicious_to = self.check_motifs_against(to_idx, block);
-        let suspicious_from = self.check_motifs_from(from_idx, block);
-
-        if suspicious_to || suspicious_from {
-            self.graph.remove_edge(eidx);
-            return true;
+        match self.evaluate_edge_incremental(from_idx, to_idx, amount, block) {
+            EdgeDecision::Reject => true,
+            EdgeDecision::Accept(eidx) => {
+                self.building_edges.push(eidx);
+                false
+            }
         }
-
-        self.building_edges.push(eidx);
-        false
     }
 
     // --------------------------------------------------------------------
@@ -112,65 +134,46 @@ impl AMLMotifDetector {
         block: u64,
         parent_hash: B256,
     ) -> bool {
-        // Check if we're validating our own block (already built)
         let is_self_built = self
             .building_block
             .as_ref()
             .map(|(b, p)| *b == block && *p == parent_hash)
             .unwrap_or(false);
 
-        let suspicious;
-
+        // For self-built blocks, remove building_edges so we can re-validate cleanly
         if is_self_built {
-            // Proposer validating its own block — graph already has edges.
-            // Just run motif checks without modifying graph.
-            let mut recipients = HashSet::new();
-            let mut senders = HashSet::new();
-
-            for &(from, to, _) in txs {
-                recipients.insert(self.get_or_add_node(to));
-                senders.insert(self.get_or_add_node(from));
-            }
-
-            suspicious = recipients
-                .iter()
-                .any(|&to_idx| self.check_motifs_against(to_idx, block))
-                || senders
-                .iter()
-                .any(|&from_idx| self.check_motifs_from(from_idx, block));
-        } else {
-            // Validator path: add edges temporarily
-            let mut temp_edges = Vec::new();
-
-            for &(from, to, amount) in txs {
-                let from_idx = self.get_or_add_node(from);
-                let to_idx = self.get_or_add_node(to);
-                let eidx = self.graph.add_edge(from_idx, to_idx, (amount, block));
-                temp_edges.push(eidx);
-            }
-
-            let mut recipients = HashSet::new();
-            let mut senders = HashSet::new();
-
-            for &(from, to, _) in txs {
-                recipients.insert(self.get_or_add_node(to));
-                senders.insert(self.get_or_add_node(from));
-            }
-
-            suspicious = recipients
-                .iter()
-                .any(|&to_idx| self.check_motifs_against(to_idx, block))
-                || senders
-                .iter()
-                .any(|&from_idx| self.check_motifs_from(from_idx, block));
-
-            // ALWAYS remove temp edges after checking
-            for eidx in temp_edges {
+            for eidx in self.building_edges.drain(..) {
                 self.graph.remove_edge(eidx);
+            }
+            self.building_block = None;
+        }
+
+        // Validate all transactions incrementally
+        let mut temp_edges = Vec::new();
+
+        for &(from, to, amount) in txs {
+            let from_idx = self.get_or_add_node(from);
+            let to_idx = self.get_or_add_node(to);
+
+            match self.evaluate_edge_incremental(from_idx, to_idx, amount, block) {
+                EdgeDecision::Reject => {
+                    for e in temp_edges {
+                        self.graph.remove_edge(e);
+                    }
+                    return true;
+                }
+                EdgeDecision::Accept(eidx) => {
+                    temp_edges.push(eidx);
+                }
             }
         }
 
-        suspicious
+        // Remove ALL temp edges
+        for e in temp_edges {
+            self.graph.remove_edge(e);
+        }
+
+        false
     }
 
     // --------------------------------------------------------------------
@@ -186,31 +189,6 @@ impl AMLMotifDetector {
         all_txs: &[(Address, Address, U256)],
         successful_indices: &[usize],
     ) {
-        // Case 1: We were building this block (self-built)
-        if let Some((b, p)) = self.building_block {
-            if b == block && p == parent_hash {
-                let success_set: HashSet<usize> = successful_indices.iter().cloned().collect();
-                let mut kept_edges = Vec::new();
-
-                for (idx, &eidx) in self.building_edges.iter().enumerate() {
-                    if success_set.contains(&idx) {
-                        kept_edges.push(eidx);
-                    } else {
-                        self.graph.remove_edge(eidx);
-                    }
-                }
-
-                self.per_block_edges.insert(block, kept_edges);
-                self.building_edges.clear();
-                self.building_block = None;
-
-                self.block_queue.push_back(block);
-                self.prune(block);
-                return;
-            }
-        }
-
-        // Case 2: External block, add successful txs now
         let mut block_edges = Vec::new();
         for &idx in successful_indices {
             if let Some(&(from, to, amount)) = all_txs.get(idx) {

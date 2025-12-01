@@ -288,6 +288,41 @@ where
             };
         }
 
+
+        // TODO: (ms) handle updating AML profile here
+        if pool_tx.transaction.function_selector() == Some(&Selector::from(hex!("a9059cbb"))) {
+            if let Ok(decoded) = transferCall::abi_decode(&pool_tx.transaction.input()) {
+                let token_address = pool_tx.to().unwrap();
+                // Check if contract opted into AML
+                if aml_evaluator.supports_aml_interface(token_address, &state_provider) {
+                    let sender = pool_tx.sender();
+                    let recipient = decoded.to;
+                    let amount = decoded.amount;
+
+                    let start = Instant::now();
+                    let (failed_aml, reason) = aml_evaluator.check_mempool_tx(token_address, sender, recipient, amount, block_number, parent_header.hash());
+                    let elapsed = start.elapsed();
+                    println!(
+                        "AML check_mempool_tx took {:?}",
+                        elapsed,
+                    );
+                    if failed_aml {
+                        print!("Transaction hash {:?} failed", pool_tx.transaction.hash());
+                        best_txs.mark_invalid(
+                            &pool_tx,
+                            InvalidPoolTransactionError::AMLRulesFailed,
+                        );
+                        // Discard the transaction
+                        // TODO: Consider whether "and_descendants" is needed here or just the tx
+                        pool.remove_transactions_and_descendants(vec![*pool_tx.hash()]);
+                        continue
+                    } else {
+                        println!("AML passed ✅");
+                    }
+                }
+            }
+        }
+
         let gas_used = match builder.execute_transaction(tx.clone()) {
             Ok(gas_used) => gas_used,
             Err(BlockExecutionError::Validation(BlockValidationError::InvalidTx {
@@ -322,43 +357,6 @@ where
                 best_txs.skip_blobs();
             }
         }
-
-        // TODO: (ms) This is the code for handling AML
-        // TODO: (ms) handle updating AML profile here
-        // if not compliant, return some new insert error
-        // to is the contract address
-        if pool_tx.transaction.function_selector() == Some(&Selector::from(hex!("a9059cbb"))) {
-            if let Ok(decoded) = transferCall::abi_decode(&pool_tx.transaction.input()) {
-                let token_address = pool_tx.to().unwrap();
-                // Check if contract opted into AML
-                if !aml_evaluator.supports_aml_interface(token_address, &state_provider) {
-                    // Contract doesn't support AML, skip validation
-                    continue;
-                }
-                let sender = pool_tx.sender();
-                let recipient = decoded.to;
-                let amount = decoded.amount;
-
-                let start = Instant::now();
-                let (failed_aml, reason) = aml_evaluator.check_mempool_tx(token_address, sender, recipient, amount, block_number, parent_header.hash());
-                let elapsed = start.elapsed();
-                println!(
-                    "AML check_mempool_tx took {:?}",
-                    elapsed,
-                );
-                if failed_aml {
-                    print!("Transaction hash {:?} failed", pool_tx.transaction.hash());
-                    best_txs.mark_invalid(
-                        &pool_tx,
-                        InvalidPoolTransactionError::AMLRulesFailed,
-                    );
-                } else {
-                    println!("AML passed ✅");
-                }
-            }
-        }
-
-
 
         // update and add to total fees
         let miner_fee =
