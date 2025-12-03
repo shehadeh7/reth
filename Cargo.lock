@@ -960,6 +960,7 @@ dependencies = [
  "reth-storage-api",
  "revm-interpreter 23.0.2",
  "revm-primitives",
+ "rustc-hash 2.1.1",
  "serde",
  "smallvec",
  "tempfile",

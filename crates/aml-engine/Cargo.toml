@@ -41,6 +41,7 @@ smallvec.workspace = true
 redb = "2.5.0"
 bincode = "2.0.1"
 lru = "0.16.2"
+rustc-hash = "2.1.1"
 
 # testing
 rand = { workspace = true, optional = true }
