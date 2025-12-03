@@ -89,8 +89,10 @@ impl AMLMotifDetector {
             return false;
         }
 
-        // Remove address mapping that points to this logical id
-        self.node_map.retain(|_, id| *id != node_id);
+        // Remove address mapping directly
+        if let Some(addr_ref) = self.graph.node_weight(nidx) {
+            self.node_map.remove(addr_ref);
+        }
 
         // Swap-with-last to keep dense logical ids
         let last_idx = self.nodes_by_id.len() - 1;
@@ -516,6 +518,8 @@ impl AMLMotifDetector {
     // --------------------------------------------------------------------
     // ROLLING PRUNE
     // --------------------------------------------------------------------
+
+    /// Prunes edges outside the block window and removes orphaned nodes
     fn prune(&mut self, current_block: u64) {
         while let Some(&old) = self.block_queue.front() {
             if current_block - old <= self.config.window_blocks {
@@ -523,9 +527,24 @@ impl AMLMotifDetector {
             }
             self.block_queue.pop_front();
             if let Some(edges) = self.per_block_edges.remove(&old) {
+                let mut orphan_candidates = HashSet::new();
                 for eidx in edges {
-                    // Just remove the edge, no cache updates
+                    if let Some((source, target)) = self.graph.edge_endpoints(self.edges_by_id[eidx as usize]) {
+                        orphan_candidates.insert(source);
+                        orphan_candidates.insert(target);
+                    }
                     self.remove_edge(eidx);
+                }
+                // Remove orphaned nodes
+                for node in orphan_candidates {
+                    if self.graph.neighbors_directed(node, Incoming).count() == 0
+                        && self.graph.neighbors_directed(node, Outgoing).count() == 0
+                    {
+                        // Find logical ID and remove
+                        if let Some((&logical_id)) = self.node_map.get(self.graph.node_weight(node).unwrap()) {
+                            self.remove_node(logical_id);
+                        }
+                    }
                 }
             }
         }
