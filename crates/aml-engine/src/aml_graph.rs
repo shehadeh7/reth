@@ -469,7 +469,9 @@ impl AMLMotifDetector {
                     if self.graph.neighbors_directed(node, Incoming).count() == 0
                         && self.graph.neighbors_directed(node, Outgoing).count() == 0
                     {
-
+                        if let Some(node_addr) = self.graph.node_weight(node) {
+                            self.node_map.remove(node_addr);
+                        }
                         self.graph.remove_node(node);
                     }
                 }
