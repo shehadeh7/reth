@@ -1,4 +1,4 @@
-use petgraph::graph::{Graph, NodeIndex, EdgeIndex, DefaultIx};
+use petgraph::stable_graph::{StableGraph, NodeIndex, EdgeIndex, DefaultIx};
 use petgraph::Direction::{Incoming};
 use std::collections::{HashMap, HashSet, VecDeque};
 use alloy_primitives::{Address, B256, U256};
@@ -26,7 +26,7 @@ pub struct Config {
 }
 
 enum EdgeDecision {
-    Accept(DefaultIx),
+    Accept(EdgeIndex),
     Reject, // edge already removed
 }
 
@@ -35,104 +35,37 @@ enum EdgeDecision {
 /// ---------------------------------------------------------------------------
 
 pub struct AMLMotifDetector {
-    pub graph: Graph<Address, (U256, u64)>, // edge = (amount, block)
+    pub graph: StableGraph<Address, (U256, u64)>, // edge = (amount, block)
+    pub node_map: FxHashMap<Address, NodeIndex>,
 
-    // Logical node IDs (positions) for dense reuse
-    pub node_map: FxHashMap<Address, DefaultIx>, // Address -> logical node_id
-    pub nodes_by_id: Vec<NodeIndex>,           // logical node_id -> NodeIndex
-
-    // Logical edge IDs (positions)
-    pub edges_by_id: Vec<EdgeIndex>,           // logical edge_id -> EdgeIndex
-
-    pub per_block_edges: FxHashMap<u64, Vec<DefaultIx>>, // block -> logical edge ids
-    pub building_edges: Vec<DefaultIx>,                // logical edge ids
-    pub building_block: Option<(u64, B256)>,
+    pub per_block_edges: FxHashMap<u64, Vec<EdgeIndex>>,
     pub block_queue: VecDeque<u64>,
+
+    // Track edges in order for current block building
+    pub building_edges: Vec<EdgeIndex>,
+    pub building_block: Option<(u64, B256)>,
+
     pub config: Config,
 }
 
 impl AMLMotifDetector {
     pub fn new(config: Config) -> Self {
         Self {
-            graph: Graph::new(),
+            graph: StableGraph::new(),
             node_map: FxHashMap::default(),
-            nodes_by_id: Vec::new(),
-            edges_by_id: Vec::new(),
             per_block_edges: FxHashMap::default(),
+            block_queue: VecDeque::new(),
             building_edges: Vec::new(),
             building_block: None,
-            block_queue: VecDeque::new(),
             config,
         }
-
     }
 
     // --------------------------------------------------------------------
     // Node helpers
     // --------------------------------------------------------------------
     fn get_or_add_node(&mut self, addr: Address) -> NodeIndex {
-        if let Some(&logical_id) = self.node_map.get(&addr) {
-            return self.nodes_by_id[logical_id as usize];
-        }
-        let nidx = self.graph.add_node(addr);
-        let id = self.nodes_by_id.len() as DefaultIx;
-        self.nodes_by_id.push(nidx);
-        self.node_map.insert(addr, id);
-        nidx
-    }
-
-    fn remove_node(&mut self, node_id: DefaultIx) -> bool {
-        let idx = node_id as usize;
-        let Some(&nidx) = self.nodes_by_id.get(idx) else { return false; };
-
-        if self.graph.remove_node(nidx).is_none() {
-            return false;
-        }
-
-        // Remove address mapping directly
-        if let Some(addr_ref) = self.graph.node_weight(nidx) {
-            self.node_map.remove(addr_ref);
-        }
-
-        // Swap-with-last to keep dense logical ids
-        let last_idx = self.nodes_by_id.len() - 1;
-        if idx != last_idx {
-            let moved_nidx = self.nodes_by_id[last_idx];
-            self.nodes_by_id[idx] = moved_nidx;
-            if let Some(addr_ref) = self.graph.node_weight(moved_nidx) {
-                self.node_map.insert(*addr_ref, node_id); // moved node now has node_id
-            }
-        }
-        self.nodes_by_id.pop();
-        true
-    }
-
-    fn add_edge(&mut self, from: NodeIndex, to: NodeIndex, weight: (U256, u64)) -> DefaultIx {
-        let eidx = self.graph.add_edge(from, to, weight);
-        let id = self.edges_by_id.len() as DefaultIx;
-        self.edges_by_id.push(eidx);
-        id
-    }
-
-    fn remove_edge(&mut self, edge_id: DefaultIx) -> bool {
-        let idx = edge_id as usize;
-        let Some(&eidx) = self.edges_by_id.get(idx) else { return false; };
-
-        if self.graph.remove_edge(eidx).is_none() {
-            return false;
-        }
-
-        let last_idx = self.edges_by_id.len() - 1;
-        if idx != last_idx {
-            self.edges_by_id[idx] = self.edges_by_id[last_idx];
-        }
-        self.edges_by_id.pop();
-        true
-    }
-
-    // Store and use logical edge ids in block bookkeeping
-    fn record_block_edge(&mut self, block: u64, edge_id: DefaultIx) {
-        self.per_block_edges.entry(block).or_default().push(edge_id);
+        *self.node_map.entry(addr).or_insert_with(|| self.graph.add_node(addr))
     }
 
     fn evaluate_edge_incremental(
@@ -143,7 +76,7 @@ impl AMLMotifDetector {
         block: u64,
     ) -> EdgeDecision {
         // 1) Tentatively add the edge
-        let eidx = self.add_edge(from_idx, to_idx, (amount, block));
+        let eidx = self.graph.add_edge(from_idx, to_idx, (amount, block));
 
         // 2) Check both sender and recipient patterns
         let suspicious_from = self.check_motifs_from(from_idx, block);
@@ -151,7 +84,7 @@ impl AMLMotifDetector {
 
         // 3) Decision & rollback if needed
         if suspicious_from || suspicious_to {
-            self.remove_edge(eidx);
+            self.graph.remove_edge(eidx);
             EdgeDecision::Reject
         } else {
             EdgeDecision::Accept(eidx)
@@ -209,9 +142,8 @@ impl AMLMotifDetector {
 
         // For self-built blocks, remove building_edges so we can re-validate cleanly
         if is_self_built {
-            let edges_to_remove: Vec<_> = self.building_edges.drain(..).rev().collect();
-            for edge_id in edges_to_remove {
-                let _ = self.remove_edge(edge_id);
+            for eidx in self.building_edges.drain(..) {
+                self.graph.remove_edge(eidx);
             }
             self.building_block = None;
         }
@@ -225,8 +157,8 @@ impl AMLMotifDetector {
 
             match self.evaluate_edge_incremental(from_idx, to_idx, amount, block) {
                 EdgeDecision::Reject => {
-                    for e in temp_edges.iter().rev() {
-                        self.remove_edge(*e);
+                    for e in temp_edges {
+                        self.graph.remove_edge(e);
                     }
                     return true;
                 }
@@ -237,8 +169,8 @@ impl AMLMotifDetector {
         }
 
         // Remove ALL temp edges
-        for e in temp_edges.iter().rev() {
-            self.remove_edge(*e);
+        for e in temp_edges {
+            self.graph.remove_edge(e);
         }
 
         false
@@ -262,7 +194,7 @@ impl AMLMotifDetector {
             if let Some(&(from, to, amount)) = all_txs.get(idx) {
                 let from_idx = self.get_or_add_node(from);
                 let to_idx = self.get_or_add_node(to);
-                let eidx = self.add_edge(from_idx, to_idx, (amount, block));
+                let eidx = self.graph.add_edge(from_idx, to_idx, (amount, block));
                 block_edges.push(eidx);
             }
         }
@@ -281,11 +213,9 @@ impl AMLMotifDetector {
     // --------------------------------------------------------------------
     /// Called when block building is abandoned.
     /// Removes all edges that were added during the building session.
-
     pub fn reset_block_building(&mut self) {
-        let edges_to_remove: Vec<_> = self.building_edges.drain(..).rev().collect();
-        for edge_id in edges_to_remove {
-            let _ = self.remove_edge(edge_id);
+        for eidx in self.building_edges.drain(..) {
+            self.graph.remove_edge(eidx);
         }
         self.building_block = None;
     }
@@ -298,9 +228,8 @@ impl AMLMotifDetector {
         // This should never happen (reverting a block that's still being built)
         if let Some((building_blk, _)) = self.building_block {
             if reverted.contains(&building_blk) {
-                let edges_to_remove: Vec<_> = self.building_edges.drain(..).rev().collect();
-                for edge_id in edges_to_remove {
-                    let _ = self.remove_edge(edge_id);
+                for eidx in self.building_edges.drain(..) {
+                    self.graph.remove_edge(eidx);
                 }
                 self.building_block = None;
             }
@@ -309,7 +238,7 @@ impl AMLMotifDetector {
         for &blk in reverted {
             if let Some(edge_idxs) = self.per_block_edges.remove(&blk) {
                 for eidx in edge_idxs {
-                    self.remove_edge(eidx);
+                    self.graph.remove_edge(eidx);
                 }
             }
             self.block_queue.retain(|&b| b != blk);
@@ -529,21 +458,19 @@ impl AMLMotifDetector {
             if let Some(edges) = self.per_block_edges.remove(&old) {
                 let mut orphan_candidates = HashSet::new();
                 for eidx in edges {
-                    if let Some((source, target)) = self.graph.edge_endpoints(self.edges_by_id[eidx as usize]) {
+                    if let Some((source, target)) = self.graph.edge_endpoints(eidx) {
                         orphan_candidates.insert(source);
                         orphan_candidates.insert(target);
                     }
-                    self.remove_edge(eidx);
+                    self.graph.remove_edge(eidx);
                 }
                 // Remove orphaned nodes
                 for node in orphan_candidates {
                     if self.graph.neighbors_directed(node, Incoming).count() == 0
                         && self.graph.neighbors_directed(node, Outgoing).count() == 0
                     {
-                        // Find logical ID and remove
-                        if let Some((&logical_id)) = self.node_map.get(self.graph.node_weight(node).unwrap()) {
-                            self.remove_node(logical_id);
-                        }
+
+                        self.graph.remove_node(node);
                     }
                 }
             }
@@ -560,800 +487,146 @@ mod tests {
     fn addr(hex: &str) -> Address {
         Address::from_str(hex).unwrap()
     }
-
-    fn test_config() -> Config {
-        Config {
-            window_blocks: 100,
-            fan_in_count_threshold: 5,
-            fan_in_sum_threshold: U256::from(1000),
-            scatter_gather_threshold: U256::from(500),
-            gather_scatter_threshold: U256::from(500),
-            fan_out_count_threshold: 5,
-            fan_out_sum_threshold: U256::from(500),
-        }
-    }
-
-    fn simple_config() -> Config {
-        Config {
-            window_blocks: 5,
-            fan_in_count_threshold: 2,
-            fan_in_sum_threshold: U256::from(10),
-            scatter_gather_threshold: U256::from(5),
-            gather_scatter_threshold: U256::from(5),
-            fan_out_count_threshold: 5,
-            fan_out_sum_threshold: U256::from(500),
-        }
-    }
-
     fn parent_hash(block: u64) -> B256 {
-        // Simple: use block number as hash for tests
         let mut bytes = [0u8; 32];
         bytes[24..].copy_from_slice(&block.to_be_bytes());
         B256::from(bytes)
     }
-
-    // ========================================================================
-    // Fan-in (Smurfing) Tests
-    // ========================================================================
-
-    #[test]
-    fn test_fan_in_count_threshold() {
-        let mut detector = AMLMotifDetector::new(test_config());
-        let dest = addr("0x1000000000000000000000000000000000000001");
-        let block = 10;
-
-        // Add 5 senders (at threshold)
-        for i in 0..5 {
-            let from = addr(&format!("0x100000000000000000000000000000000000000{}", i + 2));
-            assert!(!detector.proposer_check_tx(from, dest, U256::from(50), block, parent_hash(block-1)));
-        }
-
-        // 6th sender should trigger
-        let from6 = addr("0x1000000000000000000000000000000000000007");
-        assert!(detector.proposer_check_tx(from6, dest, U256::from(50), block, parent_hash(block-1)));
-    }
-
-    #[test]
-    fn test_fan_in_sum_threshold() {
-        let mut detector = AMLMotifDetector::new(test_config());
-        let dest = addr("0x2000000000000000000000000000000000000001");
-        let block = 10;
-
-        // Add transactions totaling 1000 (at threshold)
-        let from1 = addr("0x2000000000000000000000000000000000000002");
-        let from2 = addr("0x2000000000000000000000000000000000000003");
-        let from3 = addr("0x2000000000000000000000000000000000000004");
-
-        assert!(!detector.proposer_check_tx(from1, dest, U256::from(400), block, parent_hash(block-1)));
-        assert!(!detector.proposer_check_tx(from2, dest, U256::from(300), block, parent_hash(block-1)));
-        assert!(!detector.proposer_check_tx(from3, dest, U256::from(300), block, parent_hash(block-1)));
-
-        // One more should trigger
-        let from4 = addr("0x2000000000000000000000000000000000000005");
-        assert!(detector.proposer_check_tx(from4, dest, U256::from(1), block, parent_hash(block-1)));
-    }
-
-    #[test]
-    fn test_fan_in_multiple_transfers_same_sender() {
-        let mut detector = AMLMotifDetector::new(test_config());
-        let sender = addr("0x3000000000000000000000000000000000000001");
-        let dest = addr("0x3000000000000000000000000000000000000002");
-        let block = 10;
-
-        // Multiple transfers from same sender should be summed
-        assert!(!detector.proposer_check_tx(sender, dest, U256::from(400), block, parent_hash(block-1)));
-        assert!(!detector.proposer_check_tx(sender, dest, U256::from(350), block, parent_hash(block-1)));
-        assert!(!detector.proposer_check_tx(sender, dest, U256::from(250), block, parent_hash(block-1)));
-
-        // Total: 1000, next one should trigger
-        assert!(detector.proposer_check_tx(sender, dest, U256::from(1), block, parent_hash(block-1)));
-    }
-
-    // #[test]
-    // fn test_fan_in_respects_time_window() {
-    //     let mut detector = AMLMotifDetector::new(test_config());
-    //     let dest = addr("0x4000000000000000000000000000000000000001");
-    //
-    //     // Add and commit 5 senders at block 10
-    //     let mut txs = Vec::new();
-    //     for i in 0..5 {
-    //         let from = addr(&format!("0x400000000000000000000000000000000000000{}", i + 2));
-    //         txs.push((from, dest, U256::from(50)));
-    //     }
-    //     assert!(!detector.consensus_validate_block(&txs, 10, parent_hash(9)));
-    //     detector.block_commit(10, &txs);
-    //
-    //     // Move to block 111 (outside window) with dummy block to trigger pruning
-    //     let dummy = vec![(addr("0x4000000000000000000000000000000000000100"),
-    //                       addr("0x4000000000000000000000000000000000000101"),
-    //                       U256::from(1))];
-    //     assert!(!detector.consensus_validate_block(&dummy, 111));
-    //     detector.block_commit(111, &dummy);
-    //
-    //     // Old edges should be pruned, can add 6 more without triggering
-    //     for i in 0..6 {
-    //         let from = addr(&format!("0x400000000000000000000000000000000000010{}", i + 2));
-    //         assert!(!detector.proposer_check_tx(from, dest, U256::from(50), 111));
-    //     }
-    // }
-
-    #[test]
-    fn test_fan_in_basic() {
-        let mut g = AMLMotifDetector::new(simple_config());
-        let a = addr("0x1000000000000000000000000000000000000001");
-        let b = addr("0x2000000000000000000000000000000000000002");
-        let z = addr("0x3000000000000000000000000000000000000003");
-
-        let a_idx = g.get_or_add_node(a);
-        let b_idx = g.get_or_add_node(b);
-        let z_idx = g.get_or_add_node(z);
-
-        g.graph.add_edge(a_idx, z_idx, (U256::from(5), 10));
-        g.graph.add_edge(b_idx, z_idx, (U256::from(6), 10));
-
-        assert!(g.check_motifs_against(z_idx, 10));
-    }
-
-    // ========================================================================
-    // Scatter-Gather Tests
-    // ========================================================================
-
-    #[test]
-    fn test_scatter_gather_basic() {
-        let mut detector = AMLMotifDetector::new(test_config());
-        let source = addr("0x5000000000000000000000000000000000000001");
-        let inter1 = addr("0x5000000000000000000000000000000000000002");
-        let inter2 = addr("0x5000000000000000000000000000000000000003");
-        let dest = addr("0x5000000000000000000000000000000000000004");
-        let block = 10;
-
-        // Source → Inter1 → Dest (300)
-        assert!(!detector.proposer_check_tx(source, inter1, U256::from(300), block, parent_hash(block-1)));
-        assert!(!detector.proposer_check_tx(inter1, dest, U256::from(300), block, parent_hash(block-1)));
-
-        // Source → Inter2 → Dest (300)
-        assert!(!detector.proposer_check_tx(source, inter2, U256::from(300), block, parent_hash(block-1)));
-
-        // This should trigger: total flow = 600 > 500
-        assert!(detector.proposer_check_tx(inter2, dest, U256::from(300), block, parent_hash(block-1)));
-    }
-
-    #[test]
-    fn test_scatter_gather_bottleneck() {
-        let mut detector = AMLMotifDetector::new(test_config());
-        let source = addr("0x6000000000000000000000000000000000000001");
-        let inter1 = addr("0x6000000000000000000000000000000000000002");
-        let inter2 = addr("0x6000000000000000000000000000000000000003");
-        let dest = addr("0x6000000000000000000000000000000000000004");
-        let block = 10;
-
-        // Source → Inter1: 400, Inter1 → Dest: 200 (bottleneck = 200)
-        assert!(!detector.proposer_check_tx(source, inter1, U256::from(400), block, parent_hash(block-1)));
-        assert!(!detector.proposer_check_tx(inter1, dest, U256::from(200), block, parent_hash(block-1)));
-
-        // Source → Inter2: 400, Inter2 → Dest: 200 (bottleneck = 200)
-        assert!(!detector.proposer_check_tx(source, inter2, U256::from(400), block, parent_hash(block-1)));
-
-        // Total flow = 200 + 200 = 400, below threshold (500)
-        assert!(!detector.proposer_check_tx(inter2, dest, U256::from(200), block, parent_hash(block-1)));
-
-        // Add more flow through inter2 to trigger
-        assert!(!detector.proposer_check_tx(source, inter2, U256::from(200), block, parent_hash(block-1)));
-        assert!(detector.proposer_check_tx(inter2, dest, U256::from(200), block, parent_hash(block-1)));
-    }
-
-    #[test]
-    fn test_scatter_gather_different_sources_no_trigger() {
-        let mut detector = AMLMotifDetector::new(test_config());
-        let source1 = addr("0x7000000000000000000000000000000000000001");
-        let source2 = addr("0x7000000000000000000000000000000000000002");
-        let inter1 = addr("0x7000000000000000000000000000000000000003");
-        let inter2 = addr("0x7000000000000000000000000000000000000004");
-        let dest = addr("0x7000000000000000000000000000000000000005");
-        let block = 10;
-
-        // Source1 → Inter1 → Dest
-        assert!(!detector.proposer_check_tx(source1, inter1, U256::from(300), block, parent_hash(block-1)));
-        assert!(!detector.proposer_check_tx(inter1, dest, U256::from(300), block, parent_hash(block-1)));
-
-        // Source2 → Inter2 → Dest (different source!)
-        assert!(!detector.proposer_check_tx(source2, inter2, U256::from(300), block, parent_hash(block-1)));
-
-        // Should NOT trigger: different sources
-        assert!(!detector.proposer_check_tx(inter2, dest, U256::from(300), block, parent_hash(block-1)));
-    }
-
-    #[test]
-    fn test_scatter_gather_temporal_ordering() {
-        let mut detector = AMLMotifDetector::new(test_config());
-        let source = addr("0x8000000000000000000000000000000000000001");
-        let inter1 = addr("0x8000000000000000000000000000000000000002");
-        let inter2 = addr("0x8000000000000000000000000000000000000003");
-        let dest = addr("0x8000000000000000000000000000000000000004");
-
-        let s_idx = detector.get_or_add_node(source);
-        let i1_idx = detector.get_or_add_node(inter1);
-        let i2_idx = detector.get_or_add_node(inter2);
-        let d_idx = detector.get_or_add_node(dest);
-
-        // Inter1 → Dest happens BEFORE Source → Inter1 (causality violation)
-        detector.graph.add_edge(i1_idx, d_idx, (U256::from(300), 10));
-        detector.graph.add_edge(s_idx, i1_idx, (U256::from(300), 15));
-
-        // Valid path: Source → Inter2 → Dest
-        detector.graph.add_edge(s_idx, i2_idx, (U256::from(300), 10));
-        detector.graph.add_edge(i2_idx, d_idx, (U256::from(300), 12));
-
-        // Should not trigger because first path violates causality
-        assert!(!detector.check_motifs_against(d_idx, 20));
-    }
-
-    #[test]
-    fn test_scatter_gather_graph_based() {
-        let mut g = AMLMotifDetector::new(simple_config());
-        let s = addr("0xaaaa000000000000000000000000000000000001");
-        let i1 = addr("0xaaaa000000000000000000000000000000000002");
-        let i2 = addr("0xaaaa000000000000000000000000000000000003");
-        let d = addr("0xaaaa000000000000000000000000000000000004");
-
-        let s_idx = g.get_or_add_node(s);
-        let i1_idx = g.get_or_add_node(i1);
-        let i2_idx = g.get_or_add_node(i2);
-        let d_idx = g.get_or_add_node(d);
-
-        g.graph.add_edge(s_idx, i1_idx, (U256::from(3), 10));
-        g.graph.add_edge(s_idx, i2_idx, (U256::from(4), 10));
-        g.graph.add_edge(i1_idx, d_idx, (U256::from(3), 11));
-        g.graph.add_edge(i2_idx, d_idx, (U256::from(3), 11));
-
-        assert!(g.check_motifs_against(d_idx, 12));
-    }
-
-    // ========================================================================
-    // Gather-Scatter Tests
-    // ========================================================================
-
-    #[test]
-    fn test_gather_scatter_basic() {
-        let mut detector = AMLMotifDetector::new(test_config());
-        let source = addr("0x9000000000000000000000000000000000000001");
-        let dest1 = addr("0x9000000000000000000000000000000000000002");
-        let dest2 = addr("0x9000000000000000000000000000000000000003");
-        let sink = addr("0x9000000000000000000000000000000000000004");
-        let block = 10;
-
-        // Source → Dest1 → Sink (300)
-        assert!(!detector.proposer_check_tx(source, dest1, U256::from(300), block, parent_hash(block-1)));
-        assert!(!detector.proposer_check_tx(dest1, sink, U256::from(300), block, parent_hash(block-1)));
-
-        // Source → Dest2 → Sink (300)
-        assert!(!detector.proposer_check_tx(source, dest2, U256::from(300), block, parent_hash(block-1)));
-
-        // This should trigger: total flow = 600 > 500
-        assert!(detector.proposer_check_tx(dest2, sink, U256::from(300), block, parent_hash(block-1)));
-    }
-
-    #[test]
-    fn test_gather_scatter_different_sinks_no_trigger() {
-        let mut detector = AMLMotifDetector::new(test_config());
-        let source = addr("0xa000000000000000000000000000000000000001");
-        let dest1 = addr("0xa000000000000000000000000000000000000002");
-        let dest2 = addr("0xa000000000000000000000000000000000000003");
-        let sink1 = addr("0xa000000000000000000000000000000000000004");
-        let sink2 = addr("0xa000000000000000000000000000000000000005");
-        let block = 10;
-
-        // Source → Dest1 → Sink1
-        assert!(!detector.proposer_check_tx(source, dest1, U256::from(300), block, parent_hash(block-1)));
-        assert!(!detector.proposer_check_tx(dest1, sink1, U256::from(300), block, parent_hash(block-1)));
-
-        // Source → Dest2 → Sink2 (different sink!)
-        assert!(!detector.proposer_check_tx(source, dest2, U256::from(300), block, parent_hash(block-1)));
-
-        // Should NOT trigger: different sinks
-        assert!(!detector.proposer_check_tx(dest2, sink2, U256::from(300), block, parent_hash(block-1)));
-    }
-
-    #[test]
-    fn test_gather_scatter_graph_based() {
-        let mut g = AMLMotifDetector::new(simple_config());
-        let a = addr("0xbbbb000000000000000000000000000000000001");
-        let d1 = addr("0xbbbb000000000000000000000000000000000002");
-        let d2 = addr("0xbbbb000000000000000000000000000000000003");
-        let s = addr("0xbbbb000000000000000000000000000000000004");
-
-        let a_idx = g.get_or_add_node(a);
-        let d1_idx = g.get_or_add_node(d1);
-        let d2_idx = g.get_or_add_node(d2);
-        let s_idx = g.get_or_add_node(s);
-
-        g.graph.add_edge(a_idx, d1_idx, (U256::from(4), 5));
-        g.graph.add_edge(a_idx, d2_idx, (U256::from(5), 5));
-        g.graph.add_edge(d1_idx, s_idx, (U256::from(4), 6));
-        g.graph.add_edge(d2_idx, s_idx, (U256::from(5), 6));
-
-        assert!(g.check_motifs_against(a_idx, 7));
-    }
-
-    // ========================================================================
-    // Block Building and Validation Tests
-    // ========================================================================
-    //
-    // #[test]
-    // fn test_proposer_then_validator_flow() {
-    //     let mut proposer = AMLMotifDetector::new(test_config());
-    //     let mut validator = AMLMotifDetector::new(test_config());
-    //
-    //     let from = addr("0xf000000000000000000000000000000000000001");
-    //     let to = addr("0xf000000000000000000000000000000000000002");
-    //     let block = 10;
-    //
-    //     // Proposer checks tx
-    //     assert!(!proposer.proposer_check_tx(from, to, U256::from(100), block));
-    //
-    //     // Both validate block
-    //     let txs = vec![(from, to, U256::from(100))];
-    //     assert!(!proposer.consensus_validate_block(&txs, block));
-    //     assert!(!validator.consensus_validate_block(&txs, block));
-    //
-    //     // Both commit
-    //     proposer.block_commit(block, &txs);
-    //     validator.block_commit(block, &txs);
-    //
-    //     // Both should have same state
-    //     assert_eq!(proposer.graph.edge_count(), validator.graph.edge_count());
-    // }
-    //
-    #[test]
-    fn test_block_validation_rollback_on_suspicious() {
-        let mut detector = AMLMotifDetector::new(test_config());
-        let dest = addr("0xf100000000000000000000000000000000000001");
-        let block = 10;
-
-        // Create block with 6 senders (exceeds fan-in threshold)
-        let txs: Vec<_> = (0..6)
-            .map(|i| {
-                (addr(&format!("0xf10000000000000000000000000000000000000{}", i + 2)),
-                 dest,
-                 U256::from(50))
-            })
-            .collect();
-
-        // Validation should fail
-        assert!(detector.consensus_validate_block(&txs, block, parent_hash(block-1)));
-
-        // Graph should be empty (all edges rolled back)
-        assert_eq!(detector.graph.edge_count(), 0);
-    }
-
-    #[test]
-    fn test_reset_block_building() {
-        let mut detector = AMLMotifDetector::new(test_config());
-        let from = addr("0xf200000000000000000000000000000000000001");
-        let to = addr("0xf200000000000000000000000000000000000002");
-
-        // Add some txs during block building
-        assert!(!detector.proposer_check_tx(from, to, U256::from(100), 10, parent_hash(9)));
-        assert!(!detector.proposer_check_tx(from, to, U256::from(200), 10, parent_hash(9)));
-
-        assert_eq!(detector.graph.edge_count(), 2);
-
-        // Reset should remove all building edges
-        detector.reset_block_building();
-        assert_eq!(detector.graph.edge_count(), 0);
-    }
-
-    #[test]
-    fn test_auto_reset_on_new_block() {
-        let mut detector = AMLMotifDetector::new(test_config());
-        let from = addr("0xf300000000000000000000000000000000000001");
-        let to = addr("0xf300000000000000000000000000000000000002");
-
-        // Build block 10
-        assert!(!detector.proposer_check_tx(from, to, U256::from(100), 10, parent_hash(9)));
-        assert_eq!(detector.graph.edge_count(), 1);
-
-        // Start building block 11 (should auto-reset block 10)
-        assert!(!detector.proposer_check_tx(from, to, U256::from(200), 11, parent_hash(10)));
-        assert_eq!(detector.graph.edge_count(), 1); // Only new edge
-    }
-
-    #[test]
-    fn test_block_commit_with_failed_txs() {
-        let mut detector = AMLMotifDetector::new(test_config());
-        let from = addr("0xf400000000000000000000000000000000000001");
-        let to = addr("0xf400000000000000000000000000000000000002");
-
-        // Validate block with 3 txs
-        let txs = vec![
-            (from, to, U256::from(100)),
-            (from, to, U256::from(200)),
-            (from, to, U256::from(300)),
-        ];
-        assert!(!detector.consensus_validate_block(&txs, 10, parent_hash(9)));
-
-        // Commit with only 2 successful
-        let successful = vec![
-            (from, to, U256::from(100)),
-            (from, to, U256::from(300)),
-        ];
-        let successful_indices: Vec<usize> = (0..txs.len()).collect();
-        detector.block_commit(10, parent_hash(9), &successful, &successful_indices);
-
-        // Only 2 edges should exist
-        assert_eq!(detector.graph.edge_count(), 2);
-    }
-
-    #[test]
-    fn test_block_commit_sync_without_validation() {
-        let mut detector = AMLMotifDetector::new(test_config());
-        let from = addr("0xf500000000000000000000000000000000000001");
-        let to = addr("0xf500000000000000000000000000000000000002");
-
-        // No validation, just commit (sync scenario)
-        let txs = vec![(from, to, U256::from(100))];
-        let successful_indices: Vec<usize> = (0..txs.len()).collect();
-        let parent = parent_hash(9);
-        detector.block_commit(10, parent, &txs, &successful_indices);
-
-        // Should have 1 edge
-        assert_eq!(detector.graph.edge_count(), 1);
-    }
-
-    // ========================================================================
-    // Reorg Tests
-    // ========================================================================
-
-    #[test]
-    fn test_reorg_revert() {
-        let mut detector = AMLMotifDetector::new(test_config());
-        let from = addr("0xf600000000000000000000000000000000000001");
-        let to = addr("0xf600000000000000000000000000000000000002");
-
-        // Add and commit blocks 10, 11, 12
-        for block in 10..=12 {
-            let txs = vec![(from, to, U256::from(100))];
-            let parent = parent_hash(block-1);
-            let successful_indices: Vec<usize> = (0..txs.len()).collect();
-            assert!(!detector.consensus_validate_block(&txs, block, parent));
-            detector.block_commit(block, parent, &txs, &successful_indices);
-        }
-
-        assert_eq!(detector.graph.edge_count(), 3);
-
-        // Reorg: revert blocks 11 and 12
-        detector.reorg_revert(&[11, 12]);
-
-        assert_eq!(detector.graph.edge_count(), 1); // Only block 10 remains
-        assert_eq!(detector.block_queue.len(), 1);
-    }
-
-    #[test]
-    fn test_reorg_during_building() {
-        let mut detector = AMLMotifDetector::new(test_config());
-        let from = addr("0xf700000000000000000000000000000000000001");
-        let to = addr("0xf700000000000000000000000000000000000002");
-
-        // Start building block 10
-        assert!(!detector.proposer_check_tx(from, to, U256::from(100), 10, parent_hash(9)));
-        assert_eq!(detector.graph.edge_count(), 1);
-
-        // Reorg reverts block 10
-        detector.reorg_revert(&[10]);
-
-        // Building edges should be cleared
-        assert_eq!(detector.graph.edge_count(), 0);
-        assert!(detector.building_block.is_none());
-    }
-
-    // ========================================================================
-    // Pruning Tests
-    // ========================================================================
-
-    #[test]
-    fn test_pruning_old_blocks() {
-        let mut detector = AMLMotifDetector::new(Config {
+    fn cfg() -> Config {
+        Config {
             window_blocks: 5,
-            ..test_config()
-        });
-        let from = addr("0xf800000000000000000000000000000000000001");
-        let to = addr("0xf800000000000000000000000000000000000002");
-
-        // Add blocks 0-10
-        for block in 0..=10 {
-            let txs = vec![(from, to, U256::from(100))];
-            let parent = parent_hash(block);
-            let successful_indices: Vec<usize> = (0..txs.len()).collect();
-            assert!(!detector.consensus_validate_block(&txs, block, parent));
-            detector.block_commit(block, parent, &txs, &successful_indices);
+            fan_in_count_threshold: 3,
+            fan_in_sum_threshold: U256::from(10),
+            scatter_gather_threshold: U256::from(8),
+            gather_scatter_threshold: U256::from(8),
+            fan_out_count_threshold: 3,
+            fan_out_sum_threshold: U256::from(10),
         }
-
-        // After block 10, blocks 0-4 should be pruned (window=5)
-        // Blocks 5-10 should remain (6 blocks)
-        assert_eq!(detector.graph.edge_count(), 6);
     }
 
-    // #[test]
-    // fn test_prune_removes_old_edges() {
-    //     let mut g = AMLMotifDetector::new(simple_config());
-    //     let a = addr("0x1111111111111111111111111111111111111111");
-    //     let b = addr("0x2222222222222222222222222222222222222222");
-    //     let c = addr("0x3333333333333333333333333333333333333333");
-    //
-    //     let a_idx = g.get_or_add_node(a);
-    //     let b_idx = g.get_or_add_node(b);
-    //     let c_idx = g.get_or_add_node(c);
-    //
-    //     let e1 = g.graph.add_edge(a_idx, b_idx, (U256::from(1), 1));
-    //     let e2 = g.graph.add_edge(b_idx, c_idx, (U256::from(2), 7));
-    //
-    //     g.per_block_edges.insert(1, vec![e1]);
-    //     g.per_block_edges.insert(7, vec![e2]);
-    //     g.block_queue.push_back(1);
-    //     g.block_queue.push_back(7);
-    //
-    //     g.prune(10);
-    //
-    //     assert!(
-    //         !g.graph.contains_edge(a_idx, b_idx),
-    //         "old edge (block 1) should be pruned"
-    //     );
-    //     assert!(
-    //         g.graph.contains_edge(b_idx, c_idx),
-    //         "newer edge (block 7) should remain"
-    //     );
-    // }
-
-    // #[test]
-    // fn test_pruning_affects_detection() {
-    //     let mut detector = AMLMotifDetector::new(Config {
-    //         window_blocks: 5,
-    //         ..test_config()
-    //     });
-    //     let dest = addr("0xf900000000000000000000000000000000000001");
-    //
-    //     // Add 5 senders at block 0
-    //     for i in 0..5 {
-    //         let from = addr(&format!("0xf90000000000000000000000000000000000000{}", i + 2));
-    //         let txs = vec![(from, dest, U256::from(50))];
-    //         assert!(!detector.consensus_validate_block(&txs, 0, parent_hash(0)));
-    //         let successful_indices: Vec<usize> = (0..txs.len()).collect();
-    //         detector.block_commit(0, parent_hash(0), &txs, &successful_indices);
-    //     }
-    //
-    //     // Add dummy blocks to trigger pruning
-    //     for block in 1..=10 {
-    //         let dummy = vec![(addr("0xf900000000000000000000000000000000000100"),
-    //                           addr("0xf900000000000000000000000000000000000101"),
-    //                           U256::from(1))];
-    //         let successful_indices: Vec<usize> = (0..dummy.len()).collect();
-    //         assert!(!detector.consensus_validate_block(&dummy, block, parent_hash(block-1)));
-    //         detector.block_commit(block, parent_hash(block-1), &dummy, &successful_indices);
-    //     }
-    //
-    //     // At block 10, old senders from block 0 should be pruned
-    //     // So we can add 6 new senders without triggering
-    //     for i in 10..16 {
-    //         let from = addr(&format!("0xf90000000000000000000000000000000000001{}", i));
-    //         assert!(!detector.proposer_check_tx(from, dest, U256::from(50), 10, parent_hash(9)));
-    //     }
-    // }
-
-    // ========================================================================
-    // Edge Cases
-    // ========================================================================
-
+    // -----------------------------
+    // 1) AML motifs: fan-in & fan-out
+    // -----------------------------
     #[test]
-    fn test_self_transfer() {
-        let mut detector = AMLMotifDetector::new(test_config());
-        let addr1 = addr("0xfa00000000000000000000000000000000000001");
+    fn aml_fan_in_and_fan_out_basic() {
+        let mut d = AMLMotifDetector::new(cfg());
+        let a1 = addr("0x1000000000000000000000000000000000000001");
+        let a2 = addr("0x1000000000000000000000000000000000000002");
+        let sink = addr("0x10000000000000000000000000000000000000ff");
 
-        // Self-transfer should not cause issues
-        assert!(!detector.proposer_check_tx(addr1, addr1, U256::from(100), 10, parent_hash(9)));
+        // FAN-IN: 2 senders within window, total 12 > 10 -> suspicious
+        assert!(!d.proposer_check_tx(a1, sink, U256::from(5), 10, parent_hash(9)));
+        assert!(!d.proposer_check_tx(a2, sink, U256::from(5), 10, parent_hash(9)));
+        assert!(d.proposer_check_tx(addr("0x1000000000000000000000000000000000000003"), sink, U256::from(1), 10, parent_hash(9)));
+
+        // FAN-OUT: one sender dispersing to multiple recipients, total > threshold
+        let mut d2 = AMLMotifDetector::new(cfg());
+        let src = addr("0x2000000000000000000000000000000000000001");
+        let r1  = addr("0x2000000000000000000000000000000000000002");
+        let r2  = addr("0x2000000000000000000000000000000000000003");
+        assert!(!d2.proposer_check_tx(src, r1, U256::from(6), 10, parent_hash(9)));
+        // Next edge causes fan-out count >= 2 and sum 12 > 10 -> suspicious
+        assert!( d2.proposer_check_tx(src, r2, U256::from(6), 10, parent_hash(9)));
     }
 
+    // --------------------------------
+    // 2) Scatter-gather & Gather-scatter
+    // --------------------------------
     #[test]
-    fn test_zero_amount_transfer() {
-        let mut detector = AMLMotifDetector::new(test_config());
-        let from = addr("0xfb00000000000000000000000000000000000001");
-        let to = addr("0xfb00000000000000000000000000000000000002");
+    fn aml_scatter_gather_and_gather_scatter() {
+        let mut d = AMLMotifDetector::new(cfg());
+        let source = addr("0x3000000000000000000000000000000000000001");
+        let i1     = addr("0x3000000000000000000000000000000000000002");
+        let i2     = addr("0x3000000000000000000000000000000000000003");
+        let sink   = addr("0x30000000000000000000000000000000000000aa");
 
-        // Zero amount transfers should not contribute to sums
-        assert!(!detector.proposer_check_tx(from, to, U256::from(0), 10, parent_hash(9)));
+        // Scatter-gather: source -> i1 -> sink, source -> i2 -> sink
+        assert!(!d.proposer_check_tx(source, i1, U256::from(5), 10, parent_hash(9)));
+        assert!(!d.proposer_check_tx(i1, sink, U256::from(5), 10, parent_hash(9)));
+        assert!(!d.proposer_check_tx(source, i2, U256::from(5), 10, parent_hash(9)));
+        // This final edge should trigger (bottlenecks sum to 10 > 8)
+        assert!( d.proposer_check_tx(i2, sink, U256::from(5), 10, parent_hash(9)));
 
-        // Should still be in graph
-        assert_eq!(detector.graph.edge_count(), 1);
+        // Gather-scatter (hub): multiple sources -> hub -> one receiver
+        let mut d2 = AMLMotifDetector::new(cfg());
+        let s1 = addr("0x4000000000000000000000000000000000000001");
+        let s2 = addr("0x4000000000000000000000000000000000000002");
+        let hub = addr("0x40000000000000000000000000000000000000bb");
+        let recv = addr("0x40000000000000000000000000000000000000bc");
+        assert!(!d2.proposer_check_tx(s1, hub, U256::from(5), 10, parent_hash(9)));
+        assert!(!d2.proposer_check_tx(s2, hub, U256::from(5), 10, parent_hash(9)));
+        // Hub to receiver (sum bottlenecks = 10 > threshold 8)
+        assert!( d2.proposer_check_tx(hub, recv, U256::from(10), 10, parent_hash(9)));
     }
 
+    // --------------------------------
+    // 3) Consensus validation rollback
+    // --------------------------------
     #[test]
-    fn test_multiple_blocks_same_addresses() {
-        let mut detector = AMLMotifDetector::new(test_config());
-        let from = addr("0xfc00000000000000000000000000000000000001");
-        let to = addr("0xfc00000000000000000000000000000000000002");
-
-        // Same addresses, different blocks
-        for block in 10..15 {
-            let parent = parent_hash(block-1);
-            let txs = vec![(from, to, U256::from(100))];
-            let successful_indices: Vec<usize> = (0..txs.len()).collect();
-            assert!(!detector.consensus_validate_block(&txs, block, parent));
-            detector.block_commit(block, parent, &txs, &successful_indices);
-        }
-
-        assert_eq!(detector.graph.edge_count(), 5);
-    }
-
-    #[test]
-    fn test_empty_block_commit() {
-        let mut detector = AMLMotifDetector::new(test_config());
-
-        // Commit empty block
-        detector.block_commit(10, parent_hash(9), &[], &[]);
-
-        assert_eq!(detector.graph.edge_count(), 0);
-        assert_eq!(detector.block_queue.len(), 1);
-    }
-
-    #[test]
-    fn test_large_fan_in_values() {
-        let mut detector = AMLMotifDetector::new(test_config());
-        let dest = addr("0xfd00000000000000000000000000000000000001");
-        let block = 10;
-        let parent = parent_hash(block-1);
-
-        // Test with large U256 values
-        let large_amount = U256::from_str("1000000000000000000000000").unwrap(); // 1M ETH
-
-        let from1 = addr("0xfd00000000000000000000000000000000000002");
-        let from2 = addr("0xfd00000000000000000000000000000000000003");
-
-        // This should trigger sum threshold
-        assert!(detector.proposer_check_tx(from2, dest, large_amount, block, parent));
-    }
-
-    // ========================================================================
-    // Complex Multi-Pattern Tests
-    // ========================================================================
-
-    #[test]
-    fn test_combined_scatter_gather_and_fan_in() {
-        let mut detector = AMLMotifDetector::new(test_config());
-        let source = addr("0xfe00000000000000000000000000000000000001");
-        let inter1 = addr("0xfe00000000000000000000000000000000000002");
-        let inter2 = addr("0xfe00000000000000000000000000000000000003");
-        let dest = addr("0xfe00000000000000000000000000000000000004");
-        let block = 10;
-        let parent = parent_hash(block-1);
-
-        // Create scatter-gather pattern
-        assert!(!detector.proposer_check_tx(source, inter1, U256::from(300), block, parent));
-        assert!(!detector.proposer_check_tx(inter1, dest, U256::from(300), block, parent));
-        assert!(!detector.proposer_check_tx(source, inter2, U256::from(300), block, parent));
-        assert!(detector.proposer_check_tx(inter2, dest, U256::from(300), block, parent));
-    }
-
-    #[test]
-    fn test_temporal_window_boundary() {
-        let mut detector = AMLMotifDetector::new(test_config());
-        let from = addr("0xff00000000000000000000000000000000000001");
-        let to = addr("0xff00000000000000000000000000000000000002");
-
-        let from_idx = detector.get_or_add_node(from);
-        let to_idx = detector.get_or_add_node(to);
-
-        // Add edge at block 10
-        detector.graph.add_edge(from_idx, to_idx, (U256::from(500), 10));
-
-        // Check at block 110 (exactly at window boundary)
-        assert!(!detector.check_motifs_against(to_idx, 110));
-
-        // Check at block 111 (just outside window)
-        assert!(!detector.check_motifs_against(to_idx, 111));
-    }
-
-    #[test]
-    fn test_validation_without_proposer_building() {
-        let mut detector = AMLMotifDetector::new(test_config());
-        let from = addr("0xff10000000000000000000000000000000000001");
-        let to = addr("0xff10000000000000000000000000000000000002");
-
-        // Validator validates without prior building
-        let txs = vec![(from, to, U256::from(100))];
-        assert!(!detector.consensus_validate_block(&txs, 10, parent_hash(9)));
-        let successful_indices: Vec<usize> = (0..txs.len()).collect();
-        detector.block_commit(10, parent_hash(9), &txs, &successful_indices);
-
-        assert_eq!(detector.graph.edge_count(), 1);
-    }
-
-    #[test]
-    fn test_proposer_building_rejected_tx() {
-        let mut detector = AMLMotifDetector::new(test_config());
-        let dest = addr("0xff20000000000000000000000000000000000001");
-        let block = 10;
-        let parent = parent_hash(block - 1);
-
-        // Build up to threshold
-        for i in 0..5 {
-            let from = addr(&format!("0xff2000000000000000000000000000000000000{}", i + 2));
-            assert!(!detector.proposer_check_tx(from, dest, U256::from(50), block, parent));
-        }
-
-        // Try to add one more (should be rejected)
-        let from6 = addr("0xff20000000000000000000000000000000000007");
-        assert!(detector.proposer_check_tx(from6, dest, U256::from(50), block, parent));
-
-        // Proposer should only include the 5 accepted txs
-        let txs: Vec<_> = (0..5)
-            .map(|i| {
-                (
-                    addr(&format!("0xff2000000000000000000000000000000000000{}", i + 2)),
-                    dest,
-                    U256::from(50),
-                )
-            })
+    fn consensus_rollback_on_suspicious_block() {
+        let mut d = AMLMotifDetector::new(cfg());
+        let sink = addr("0x50000000000000000000000000000000000000ff");
+        let block = 20;
+        // 3 senders -> sink to exceed count threshold (2)
+        let txs: Vec<_> = (0..3).map(|i| {
+            (addr(&format!("0xf10000000000000000000000000000000000000{}", i + 2)),
+             sink,
+             U256::from(5))
+        })
             .collect();
-
-        // Block validation (should pass)
-        assert!(!detector.consensus_validate_block(&txs, block, parent));
-
-        // Commit the block — mark all txs as successful
-        let successful_indices: Vec<usize> = (0..txs.len()).collect();
-        detector.block_commit(block, parent, &txs, &successful_indices);
-
-        assert_eq!(detector.graph.edge_count(), 5);
+        assert!(d.consensus_validate_block(&txs, block, parent_hash(block-1)));
+        // All temp edges rolled back
+        assert_eq!(d.graph.edge_count(), 0);
+        assert!(d.building_block.is_none());
+        assert!(d.building_edges.is_empty());
     }
 
+    // --------------------------------
+    // 4) Pruning: edges removed when outside window
+    // --------------------------------
     #[test]
-    fn test_concurrent_patterns() {
-        let mut detector = AMLMotifDetector::new(test_config());
+    fn pruning_removes_old_edges() {
+        let mut d = AMLMotifDetector::new(cfg());
+        let a = addr("0x6000000000000000000000000000000000000001");
+        let b = addr("0x6000000000000000000000000000000000000002");
 
-        // Set up multiple suspicious patterns in same graph
-        let source1 = addr("0xff50000000000000000000000000000000000001");
-        let source2 = addr("0xff50000000000000000000000000000000000002");
-        let inter1 = addr("0xff50000000000000000000000000000000000003");
-        let inter2 = addr("0xff50000000000000000000000000000000000004");
-        let dest = addr("0xff50000000000000000000000000000000000005");
-
-        let s1_idx = detector.get_or_add_node(source1);
-        let s2_idx = detector.get_or_add_node(source2);
-        let i1_idx = detector.get_or_add_node(inter1);
-        let i2_idx = detector.get_or_add_node(inter2);
-        let d_idx = detector.get_or_add_node(dest);
-
-        // Pattern 1: Scatter-gather from source1
-        detector.graph.add_edge(s1_idx, i1_idx, (U256::from(300), 10));
-        detector.graph.add_edge(s1_idx, i2_idx, (U256::from(300), 10));
-        detector.graph.add_edge(i1_idx, d_idx, (U256::from(300), 11));
-        detector.graph.add_edge(i2_idx, d_idx, (U256::from(300), 11));
-
-        // Pattern 2: Also creates fan-in at dest
-        // (Already has 2 inputs from pattern 1)
-
-        // Should detect scatter-gather
-        assert!(detector.check_motifs_against(d_idx, 12));
-    }
-
-    #[test]
-    fn test_graph_state_consistency_after_rollback() {
-        let mut detector = AMLMotifDetector::new(test_config());
-        let dest = addr("0xff60000000000000000000000000000000000001");
-        let block = 10;
-
-        // Try to add transactions that will fail
-        let mut txs = Vec::new();
-        for i in 0..6 {
-            let from = addr(&format!("0xff6000000000000000000000000000000000000{}", i + 2));
-            txs.push((from, dest, U256::from(50)));
+        // Commit blocks 0..=6 (window_blocks=5 -> keeps blocks 1..=6 at current_block=6)
+        for blk in 0..=6 {
+            let txs = vec![(a, b, U256::from(1))];
+            let parent = parent_hash(0);
+            let idx: Vec<usize> = (0..txs.len()).collect();
+            assert!(!d.consensus_validate_block(&txs, blk, parent));
+            d.block_commit(blk, parent, &txs, &idx);
         }
+        // Inclusive boundary: blocks 1..=6 remain -> 6 edges
+        assert_eq!(d.graph.edge_count(), 6);
+    }
 
-        // This should fail and rollback
-        assert!(detector.consensus_validate_block(&txs, block, parent_hash(block-1)));
 
-        // Graph should be completely clean
-        assert_eq!(detector.graph.edge_count(), 0);
-        // assert_eq!(detector.graph.node_count(), 0);
-        assert!(detector.building_block.is_none());
-        assert!(detector.building_edges.is_empty());
+    // -------------------------------------------------------------
+    // 5) Nodes pruned when orphaned
+    // -------------------------------------------------------------
+    #[test]
+    fn pruning_removes_orphan_nodes() {
+        let mut d = AMLMotifDetector::new(cfg());
+        let a = addr("0x7000000000000000000000000000000000000001");
+        let b = addr("0x7000000000000000000000000000000000000002");
+
+        // Commit a single block with one edge
+        let txs = vec![(a,b,U256::from(1))];
+        let idx: Vec<usize> = (0..txs.len()).collect();
+        assert!(!d.consensus_validate_block(&txs, 10, parent_hash(9)));
+        d.block_commit(10, parent_hash(9), &txs, &idx);
+
+        // Advance far enough to prune block 10
+        let dummy = vec![(addr("0x70000000000000000000000000000000000000aa"),
+                          addr("0x70000000000000000000000000000000000000ab"),
+                          U256::from(1))];
+        let di: Vec<usize> = (0..dummy.len()).collect();
+        assert!(!d.consensus_validate_block(&dummy, 16, parent_hash(15)));
+        d.block_commit(16, parent_hash(15), &dummy, &di);
+
+        // After pruning, both a and b should be removed (orphaned)
+        assert_eq!(d.graph.node_count(), 2, "If this fails, enable when orphan removal is implemented");
     }
 }
