@@ -684,6 +684,21 @@ where
                     return None;
                 }
 
+                let sender_is_eoa = state
+                    .account_code(&sender)
+                    .unwrap_or(None)
+                    .is_none();
+
+                let recipient_is_eoa = state
+                    .account_code(&decoded.to)
+                    .unwrap_or(None)
+                    .is_none();
+
+                // Optional: skip if txs are not between EOAs
+                if !sender_is_eoa || !recipient_is_eoa {
+                    return None;
+                }
+
                 Option::from((idx, token, sender, decoded.to, decoded.amount))
             })
             .collect();

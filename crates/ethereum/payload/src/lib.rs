@@ -178,6 +178,8 @@ where
 
     let chain_spec = client.chain_spec();
 
+    // builder.evm_mut().block().prevrandao // TODO: Check if this value exists
+
     debug!(target: "payload_builder", id=%attributes.id, parent_header = ?parent_header.hash(), parent_number = parent_header.number, "building new payload");
     let mut cumulative_gas_used = 0;
     let block_gas_limit: u64 = builder.evm_mut().block().gas_limit;
@@ -288,7 +290,6 @@ where
             };
         }
 
-
         // TODO: (ms) handle updating AML profile here
         if pool_tx.transaction.function_selector() == Some(&Selector::from(hex!("a9059cbb"))) {
             if let Ok(decoded) = transferCall::abi_decode(&pool_tx.transaction.input()) {
@@ -298,6 +299,21 @@ where
                     let sender = pool_tx.sender();
                     let recipient = decoded.to;
                     let amount = decoded.amount;
+                    // TODO: Decide if we should also limit this to just EOA transfers instead of involving DEXs/Smart contracts?
+                    let sender_is_eoa = state_provider
+                        .account_code(&sender)
+                        .unwrap_or(None)
+                        .is_none();
+
+                    let recipient_is_eoa = state_provider
+                        .account_code(&recipient)
+                        .unwrap_or(None)
+                        .is_none();
+
+                    // Optional: skip if txs are not between EOAs
+                    if !sender_is_eoa || !recipient_is_eoa {
+                        continue;
+                    }
 
                     let start = Instant::now();
                     let (failed_aml, reason) = aml_evaluator.check_mempool_tx(token_address, sender, recipient, amount, block_number, parent_header.hash());

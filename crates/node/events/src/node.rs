@@ -22,11 +22,6 @@ use std::{
 };
 use tokio::time::Interval;
 use tracing::{debug, info, warn};
-use aml_engine::aml::{AML_EVALUATOR};
-use alloy_sol_types::{sol, SolCall};
-sol! {
-    function transfer(address to, uint256 amount);
-}
 
 /// Interval of reporting node state.
 const INFO_MESSAGE_INTERVAL: Duration = Duration::from_secs(25);
@@ -272,58 +267,6 @@ impl NodeState {
                     ?elapsed,
                     "Block added to canonical chain"
                 );
-                // TODO: (ms) add logic to update AML profiles here?
-                // check receipts from executed block receipt to figure out transactions that run
-                let mut aml_evaluator = AML_EVALUATOR
-                    .get()
-                    .expect("AML_EVALUATOR not initialized")
-                    .write()
-                    .expect("poisoned lock");
-
-                if let Some(receipts) = executed.execution_output.receipts.get(0) {
-                    let mut all_txs = Vec::new();
-                    let mut successful_indices = Vec::new();
-
-                    for (tx_index, (tx, receipt)) in block.body().transactions().iter().zip(receipts).enumerate() {
-                        let tx_recovered = tx.try_clone_into_recovered_unchecked().unwrap();
-
-                        // skip non-transfer
-                        // TODO: (ms) will need to just perform tx checks for certain smart contract addresses
-                        if tx_recovered.inner().function_selector() != Some(&Selector::from(hex!("a9059cbb"))) {
-                            continue;
-                        }
-
-                        if let Ok(decoded) = transferCall::abi_decode(&tx_recovered.inner().input()) {
-                            let sender = tx_recovered.signer();
-                            let token = tx_recovered.to().unwrap();
-                            let recipient = decoded.to;
-                            let amount = decoded.amount;
-
-                            if aml_evaluator.aml_support_cache.get(&token) != Some(&true) {
-                                continue;
-                            }
-
-                            // Track the index in all_txs where we add this transaction
-                            let current_index = all_txs.len();
-                            all_txs.push((sender, recipient, amount));
-
-                            // Only add to successful_indices if the receipt shows success
-                            if receipt.status() {
-                                successful_indices.push(current_index);
-                            }
-                        }
-                    }
-
-                    // Commit block with all transactions and successful indices
-                    if !all_txs.is_empty() {
-                        aml_evaluator.update_profiles_batch(
-                            block.number(),
-                            block.parent_hash(),
-                            &all_txs,
-                            &successful_indices,
-                        );
-                    }
-                }
             }
             BeaconConsensusEngineEvent::CanonicalChainCommitted(head, elapsed) => {
                 self.latest_block = Some(head.number());

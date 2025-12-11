@@ -40,7 +40,6 @@ use std::{
 };
 use std::str::FromStr;
 use tokio::sync::Mutex;
-use aml_engine::aml::{AML_EVALUATOR};
 
 /// Validator for Ethereum transactions.
 /// It is a [`TransactionValidator`] implementation that validates ethereum transaction.

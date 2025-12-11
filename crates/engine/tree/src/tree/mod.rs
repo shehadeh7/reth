@@ -1918,7 +1918,7 @@ where
             for block in new.iter() {
                 let mut all_txs = Vec::new();
                 let mut successful_indices = Vec::new();
-
+                let state_provider = self.provider.state_by_block_hash(tip.hash()).unwrap();
                 if let Some(receipts) = block.execution_output.receipts.get(0) {
                     for (tx, receipt) in block.block.recovered_block.transactions_recovered().zip(receipts) {
                         let tx_recovered = tx.try_clone_into_recovered_unchecked().unwrap();
@@ -1933,7 +1933,22 @@ where
                             let recipient = decoded.to;
                             let amount = decoded.amount;
 
-                            if aml_evaluator.aml_support_cache.get(&token) != Some(&true) {
+                            if aml_evaluator.supports_aml_interface(token, &state_provider) != true {
+                                continue;
+                            }
+
+                            let sender_is_eoa = state_provider
+                                .account_code(&sender)
+                                .unwrap_or(None)
+                                .is_none();
+
+                            let recipient_is_eoa = state_provider
+                                .account_code(&recipient)
+                                .unwrap_or(None)
+                                .is_none();
+
+                            // Optional: skip if txs are not between EOAs
+                            if !sender_is_eoa || !recipient_is_eoa {
                                 continue;
                             }
 
@@ -2215,6 +2230,71 @@ where
 
         self.state.tree_state.insert_executed(executed.clone());
         self.metrics.engine.executed_blocks.set(self.state.tree_state.block_count() as f64);
+
+        // check receipts from executed block receipt to figure out transactions that run
+        let mut aml_evaluator = AML_EVALUATOR
+            .get()
+            .expect("AML_EVALUATOR not initialized")
+            .write()
+            .expect("poisoned lock");
+
+        if let Some(receipts) = executed.execution_output.receipts.get(0) {
+            let mut all_txs = Vec::new();
+            let mut successful_indices = Vec::new();
+            let state_provider = self.provider.state_by_block_hash(block_id.parent).unwrap();
+            for (tx, receipt) in executed.block.recovered_block.transactions_recovered().zip(receipts) {
+                let tx_recovered = tx.try_clone_into_recovered_unchecked().unwrap();
+
+                if tx_recovered.inner().function_selector() != Some(&Selector::from(hex!("a9059cbb"))) {
+                    continue;
+                }
+
+                if let Ok(decoded) = transferCall::abi_decode(&tx_recovered.inner().input()) {
+                    let sender = tx_recovered.signer();
+                    let token = tx_recovered.to().unwrap();
+                    let recipient = decoded.to;
+                    let amount = decoded.amount;
+
+                    if aml_evaluator.supports_aml_interface(token, &state_provider) != true {
+                        continue;
+                    }
+
+                    let sender_is_eoa = state_provider
+                        .account_code(&sender)
+                        .unwrap_or(None)
+                        .is_none();
+
+                    let recipient_is_eoa = state_provider
+                        .account_code(&recipient)
+                        .unwrap_or(None)
+                        .is_none();
+
+                    // Optional: skip if txs are not between EOAs
+                    if !sender_is_eoa || !recipient_is_eoa {
+                        continue;
+                    }
+
+                    // Track the index in all_txs where we add this transaction
+                    let current_index = all_txs.len();
+                    all_txs.push((sender, recipient, amount));
+
+                    // Only add to successful_indices if the receipt shows success
+                    if receipt.status() {
+                        successful_indices.push(current_index);
+                    }
+                }
+            }
+
+            // Commit block with all transactions and successful indices
+            if !all_txs.is_empty() {
+                aml_evaluator.update_profiles_batch(
+                    executed.block.recovered_block.number(),
+                    executed.block.recovered_block.parent_hash(),
+                    &all_txs,
+                    &successful_indices,
+                );
+            }
+        }
 
         // emit insert event
         let elapsed = start.elapsed();
