@@ -2,6 +2,7 @@ use crate::account_profile::{AccountProfile};
 use alloy_primitives::{keccak256, Address, FixedBytes, B256, U256};
 use std::collections::{HashMap};
 use std::num::NonZeroUsize;
+use std::str::FromStr;
 use std::sync::{OnceLock, RwLock};
 use lru::LruCache;
 use revm_primitives::KECCAK_EMPTY;
@@ -58,13 +59,13 @@ pub struct AmlEvaluator {
 impl AmlEvaluator {
     pub fn new() -> Self {
         let motif_config: Config = Config {
-            window_blocks: 10,  // Small window for testing
-            fan_in_count_threshold: 3,  // Flag after 3 distinct senders
-            fan_in_sum_threshold: U256::from(1000),  // 1000 wei total
-            scatter_gather_threshold: U256::from(500),  // 500 wei through multiple paths
-            gather_scatter_threshold: U256::from(500),  // 500 wei through multiple paths
-            fan_out_count_threshold: 3,
-            fan_out_sum_threshold: U256::from(1000),
+            window_blocks: 300,
+            fan_in_count_threshold: 1000000000,
+            fan_in_sum_threshold: U256::from_str("1000000000000000000000000000000").unwrap(),
+            scatter_gather_threshold: U256::from_str("1000000000000000000000000000000").unwrap(),
+            gather_scatter_threshold: U256::from_str("1000000000000000000000000000000").unwrap(),
+            fan_out_count_threshold: 1000000000,
+            fan_out_sum_threshold: U256::from_str("1000000000000000000000000000000").unwrap(),
         };
 
         Self {
@@ -111,10 +112,8 @@ impl AmlEvaluator {
         all_txs: &[(Address, Address, U256)],
         successful_indices: &[usize],
     ) {
-        if all_txs.is_empty() {
-            return;
-        }
-
+        println!("all_txs {:?}", all_txs.len());
+        println!("successful_indices len {:?}", successful_indices.len());
         self.motif_detector.block_commit(block, parent_hash, all_txs, successful_indices);
     }
 
