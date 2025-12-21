@@ -60,12 +60,12 @@ impl AmlEvaluator {
     pub fn new() -> Self {
         let motif_config: Config = Config {
             window_blocks: 300,
-            fan_in_count_threshold: 1000000000,
-            fan_in_sum_threshold: U256::from_str("1000000000000000000000000000000").unwrap(),
-            scatter_gather_threshold: U256::from_str("1000000000000000000000000000000").unwrap(),
-            gather_scatter_threshold: U256::from_str("1000000000000000000000000000000").unwrap(),
-            fan_out_count_threshold: 1000000000,
-            fan_out_sum_threshold: U256::from_str("1000000000000000000000000000000").unwrap(),
+            fan_in_count_threshold: 100000000000,
+            fan_in_sum_threshold: U256::from_str("100000000000000000000000000000000").unwrap(),
+            scatter_gather_threshold: U256::from_str("100000000000000000000000000000000").unwrap(),
+            gather_scatter_threshold: U256::from_str("100000000000000000000000000000000").unwrap(),
+            fan_out_count_threshold: 100000000000,
+            fan_out_sum_threshold: U256::from_str("100000000000000000000000000000000").unwrap(),
         };
 
         Self {
@@ -88,7 +88,7 @@ impl AmlEvaluator {
         }
 
         // Ignore string return for now
-        (self.motif_detector.proposer_check_tx(sender, recipient, amount, block_number, parent_hash), Option::None)
+        (self.motif_detector.proposer_check_tx(sender, recipient, amount, token, block_number, parent_hash), Option::None)
     }
 
     pub fn check_compliance_batch(
@@ -100,16 +100,16 @@ impl AmlEvaluator {
         if transactions.is_empty() {
             return false;
         }
-        let filtered: Vec<(Address, Address, U256)> =
-            transactions.iter().map(|&(_, a, b, v)| (a, b, v)).collect();
-        self.motif_detector.consensus_validate_block(&filtered, block_number, parent_hash)
+        // let filtered: Vec<(Address, Address, U256)> =
+        //     transactions.iter().map(|&(_, a, b, v)| (a, b, v)).collect();
+        self.motif_detector.consensus_validate_block(&transactions, block_number, parent_hash)
     }
 
     pub fn update_profiles_batch(
         &mut self,
         block: u64,
         parent_hash: B256,
-        all_txs: &[(Address, Address, U256)],
+        all_txs: &[(Address, Address, Address, U256)],
         successful_indices: &[usize],
     ) {
         println!("all_txs {:?}", all_txs.len());
@@ -121,7 +121,7 @@ impl AmlEvaluator {
     pub fn handle_reorg(
         &mut self,
         old_blocks: &[u64],
-        new_blocks: &[(u64, B256, Vec<(Address, Address, U256)>, Vec<usize>)],
+        new_blocks: &[(u64, B256, Vec<(Address, Address, Address, U256)>, Vec<usize>)],
     ) {
         // Step 1: Revert motif detector
         self.motif_detector.reorg_revert(old_blocks);

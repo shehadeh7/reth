@@ -705,7 +705,14 @@ where
 
         // Run AML batch check
         let aml_inputs = aml_txs.iter().map(|&(_, t, s, r, a)| (t, s, r, a)).collect::<Vec<_>>();
+        let start = Instant::now();
+        println!("aml inputs is {:?}", aml_inputs);
         let aml_suspicious = aml_evaluator.check_compliance_batch(&aml_inputs, block.number(), block.parent_hash());
+        let elapsed = start.elapsed();
+        println!(
+            "Check compliance batch took {:?}",
+            elapsed,
+        );
 
         drop(aml_evaluator); // release lock ASAP
 

@@ -1953,7 +1953,7 @@ where
                             }
 
                             let current_index = all_txs.len();
-                            all_txs.push((sender, recipient, amount));
+                            all_txs.push((token, sender, recipient, amount));
 
                             if receipt.status() {
                                 successful_indices.push(current_index);
@@ -2276,7 +2276,7 @@ where
 
                     // Track the index in all_txs where we add this transaction
                     let current_index = all_txs.len();
-                    all_txs.push((sender, recipient, amount));
+                    all_txs.push((token, sender, recipient, amount));
 
                     // Only add to successful_indices if the receipt shows success
                     if receipt.status() {
@@ -2285,15 +2285,19 @@ where
                 }
             }
 
+            let start = Instant::now();
             // Commit block with all transactions and successful indices
-            if !all_txs.is_empty() {
-                aml_evaluator.update_profiles_batch(
-                    executed.block.recovered_block.number(),
-                    executed.block.recovered_block.parent_hash(),
-                    &all_txs,
-                    &successful_indices,
-                );
-            }
+            aml_evaluator.update_profiles_batch(
+                executed.block.recovered_block.number(),
+                executed.block.recovered_block.parent_hash(),
+                &all_txs,
+                &successful_indices,
+            );
+            let elapsed = start.elapsed();
+            println!(
+                "Block updated profiles batch took {:?}",
+                elapsed,
+            );
         }
 
         // emit insert event

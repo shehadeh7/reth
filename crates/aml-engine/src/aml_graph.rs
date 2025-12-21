@@ -25,6 +25,12 @@ pub struct Config {
     pub fan_out_sum_threshold: U256,
 }
 
+#[derive(Clone, Debug)]
+pub struct TransferEdge {
+    pub amount: U256,
+    pub block: u64,
+    pub token: Address,
+}
 
 #[derive(Debug)]
 struct EvalResult {
@@ -49,7 +55,7 @@ impl EvalResult {
 /// ---------------------------------------------------------------------------
 
 pub struct AMLMotifDetector {
-    pub graph: StableGraph<Address, (U256, u64)>, // edge = (amount, block)
+    pub graph: StableGraph<Address, TransferEdge>, // edge = (amount, block)
     pub node_map: FxHashMap<Address, NodeIndex>,
 
     pub per_block_edges: FxHashMap<u64, Vec<EdgeIndex>>,
@@ -102,6 +108,7 @@ impl AMLMotifDetector {
 
     fn evaluate_edge_incremental(
         &mut self,
+        token: Address,
         from: Address,
         to: Address,
         amount: U256,
@@ -111,7 +118,7 @@ impl AMLMotifDetector {
         let (to_idx, to_created) = self.get_or_add_node(to);
 
         // Tentatively add the edge so checks see it
-        let edge_idx = self.graph.add_edge(from_idx, to_idx, (amount, block));
+        let edge_idx = self.graph.add_edge(from_idx, to_idx, TransferEdge{amount, block, token});
 
         // Evaluate motifs with the tentative edge present
         let suspicious_from = self.check_motifs_from(from_idx, block);
@@ -140,6 +147,7 @@ impl AMLMotifDetector {
         from: Address,
         to: Address,
         amount: U256,
+        token: Address,
         block: u64,
         parent_hash: B256,
     ) -> bool {
@@ -148,7 +156,7 @@ impl AMLMotifDetector {
             self.building_block = Some((block, parent_hash));
         }
 
-        let res = self.evaluate_edge_incremental(from, to, amount, block);
+        let res = self.evaluate_edge_incremental(token, from, to, amount, block);
 
         if res.suspicious() {
             // rollback: remove tentative edge
@@ -174,7 +182,7 @@ impl AMLMotifDetector {
     /// Returns `true` if any tx creates a forbidden motif.
     pub fn consensus_validate_block(
         &mut self,
-        txs: &[(Address, Address, U256)],
+        txs: &[(Address, Address, Address, U256)], // token sender receiver amount
         block: u64,
         parent_hash: B256,
     ) -> bool {
@@ -196,8 +204,8 @@ impl AMLMotifDetector {
         let mut temp_edges: Vec<EvalResult> = Vec::new();
 
 
-        for &(from, to, amount) in txs {
-            let res = self.evaluate_edge_incremental(from, to, amount, block);
+        for &(token, from, to, amount) in txs {
+            let res = self.evaluate_edge_incremental(token, from, to, amount, block);
 
             if res.suspicious() {
                 // rollback the current edge
@@ -238,17 +246,17 @@ impl AMLMotifDetector {
         &mut self,
         block: u64,
         parent_hash: B256,
-        all_txs: &[(Address, Address, U256)],
+        all_txs: &[(Address, Address, Address, U256)],
         successful_indices: &[usize],
     ) {
         // Add edges for successful transactions (if any)
         if !successful_indices.is_empty() {
             let mut block_edges = Vec::new();
             for &idx in successful_indices {
-                if let Some(&(from, to, amount)) = all_txs.get(idx) {
+                if let Some(&(token, from, to, amount)) = all_txs.get(idx) {
                     let (from_idx, from_created) = self.get_or_add_node(from);
                     let (to_idx, to_created) = self.get_or_add_node(to);
-                    let eidx = self.graph.add_edge(from_idx, to_idx, (amount, block));
+                    let eidx = self.graph.add_edge(from_idx, to_idx, TransferEdge{amount, block, token});
                     block_edges.push(eidx);
                 }
             }
@@ -315,9 +323,10 @@ impl AMLMotifDetector {
             // Sum ALL edges from this neighbor within the window
             let mut neighbor_total = U256::from(0);
             for edge_ref in self.graph.edges_connecting(neighbor, to_idx) {
-                let (amt, blk) = *edge_ref.weight();
-                if current_block >= blk && current_block - blk <= self.config.window_blocks {
-                    neighbor_total += amt;
+                let edge = edge_ref.weight();
+
+                if current_block >= edge.block && current_block - edge.block <= self.config.window_blocks {
+                    neighbor_total += edge.amount;
                 }
             }
 
@@ -343,10 +352,10 @@ impl AMLMotifDetector {
             let mut inter_to_dest_sum = U256::from(0);
 
             for edge_ref in self.graph.edges_connecting(inter, to_idx) {
-                let (amt, blk) = *edge_ref.weight();
-                if current_block >= blk && current_block - blk <= self.config.window_blocks {
-                    inter_to_dest_sum += amt;
-                    inter_to_dest_max_block = inter_to_dest_max_block.max(blk);
+                let edge = edge_ref.weight();
+                if current_block >= edge.block && current_block - edge.block <= self.config.window_blocks {
+                    inter_to_dest_sum += edge.amount;
+                    inter_to_dest_max_block = inter_to_dest_max_block.max(edge.block);
                 }
             }
 
@@ -361,10 +370,10 @@ impl AMLMotifDetector {
                 let mut src_to_inter_sum = U256::from(0);
 
                 for edge_ref in self.graph.edges_connecting(src, inter) {
-                    let (amt, blk) = *edge_ref.weight();
-                    if current_block >= blk && current_block - blk <= self.config.window_blocks {
-                        src_to_inter_sum += amt;
-                        src_to_inter_max_block = src_to_inter_max_block.max(blk);
+                    let edge = edge_ref.weight();
+                    if current_block >= edge.block && current_block - edge.block <= self.config.window_blocks {
+                        src_to_inter_sum += edge.amount;
+                        src_to_inter_max_block = src_to_inter_max_block.max(edge.block);
                     }
                 }
 
@@ -411,9 +420,9 @@ impl AMLMotifDetector {
 
             let mut neighbor_total = U256::from(0);
             for edge_ref in self.graph.edges_connecting(from_idx, neighbor) {
-                let (amt, blk) = *edge_ref.weight();
-                if current_block >= blk && current_block - blk <= self.config.window_blocks {
-                    neighbor_total += amt;
+                let edge = edge_ref.weight();
+                if current_block >= edge.block && current_block - edge.block <= self.config.window_blocks {
+                    neighbor_total += edge.amount;
                 }
             }
 
@@ -439,10 +448,10 @@ impl AMLMotifDetector {
             let mut source_to_sender_sum = U256::from(0);
 
             for edge_ref in self.graph.edges_connecting(source, from_idx) {
-                let (amt, blk) = *edge_ref.weight();
-                if current_block >= blk && current_block - blk <= self.config.window_blocks {
-                    source_to_sender_sum += amt;
-                    source_to_sender_max_block = source_to_sender_max_block.max(blk);
+                let edge = edge_ref.weight();
+                if current_block >= edge.block && current_block - edge.block <= self.config.window_blocks {
+                    source_to_sender_sum += edge.amount;
+                    source_to_sender_max_block = source_to_sender_max_block.max(edge.block);
                 }
             }
 
@@ -457,10 +466,10 @@ impl AMLMotifDetector {
                 let mut sender_to_recv_sum = U256::from(0);
 
                 for edge_ref in self.graph.edges_connecting(from_idx, recv) {
-                    let (amt, blk) = *edge_ref.weight();
-                    if current_block >= blk && current_block - blk <= self.config.window_blocks {
-                        sender_to_recv_sum += amt;
-                        sender_to_recv_max_block = sender_to_recv_max_block.max(blk);
+                    let edge = edge_ref.weight();
+                    if current_block >= edge.block && current_block - edge.block <= self.config.window_blocks {
+                        sender_to_recv_sum += edge.amount;
+                        sender_to_recv_max_block = sender_to_recv_max_block.max(edge.block);
                     }
                 }
 
@@ -532,6 +541,15 @@ impl AMLMotifDetector {
                  nodes_before, self.graph.node_count(),
                  edges_before, self.graph.edge_count());
     }
+
+    pub fn estimate_internal_memory(&self) -> usize {
+        let node_map_size = self.node_map.capacity() * (std::mem::size_of::<Address>() + std::mem::size_of::<NodeIndex>());
+        let graph_nodes = self.graph.node_count() * std::mem::size_of::<Address>();
+        // Edges in petgraph StableGraph store (amount, block) + internal pointers/indices
+        let graph_edges = self.graph.edge_count() * (std::mem::size_of::<(U256, u64)>() + 32);
+
+        node_map_size + graph_nodes + graph_edges
+    }
 }
 
 #[cfg(test)]
@@ -539,6 +557,8 @@ mod tests {
     use super::*;
     use alloy_primitives::{Address, U256};
     use std::str::FromStr;
+
+    pub const ZERO_ADDRESS: Address = Address::ZERO;
 
     fn addr(hex: &str) -> Address {
         Address::from_str(hex).unwrap()
@@ -571,18 +591,18 @@ mod tests {
         let sink = addr("0x10000000000000000000000000000000000000ff");
 
         // FAN-IN: 2 senders within window, total 12 > 10 -> suspicious
-        assert!(!d.proposer_check_tx(a1, sink, U256::from(5), 10, parent_hash(9)));
-        assert!(!d.proposer_check_tx(a2, sink, U256::from(5), 10, parent_hash(9)));
-        assert!(d.proposer_check_tx(addr("0x1000000000000000000000000000000000000003"), sink, U256::from(1), 10, parent_hash(9)));
+        assert!(!d.proposer_check_tx(a1, sink, U256::from(5), ZERO_ADDRESS, 10, parent_hash(9)));
+        assert!(!d.proposer_check_tx(a2, sink, U256::from(5), ZERO_ADDRESS, 10, parent_hash(9)));
+        assert!(d.proposer_check_tx(addr("0x1000000000000000000000000000000000000003"), sink, U256::from(1), ZERO_ADDRESS, 10, parent_hash(9)));
 
         // FAN-OUT: one sender dispersing to multiple recipients, total > threshold
         let mut d2 = AMLMotifDetector::new(cfg());
         let src = addr("0x2000000000000000000000000000000000000001");
         let r1  = addr("0x2000000000000000000000000000000000000002");
         let r2  = addr("0x2000000000000000000000000000000000000003");
-        assert!(!d2.proposer_check_tx(src, r1, U256::from(6), 10, parent_hash(9)));
+        assert!(!d2.proposer_check_tx(src, r1, U256::from(6), ZERO_ADDRESS, 10, parent_hash(9)));
         // Next edge causes fan-out count >= 2 and sum 12 > 10 -> suspicious
-        assert!( d2.proposer_check_tx(src, r2, U256::from(6), 10, parent_hash(9)));
+        assert!( d2.proposer_check_tx(src, r2, U256::from(6), ZERO_ADDRESS, 10, parent_hash(9)));
     }
 
     // --------------------------------
@@ -597,11 +617,11 @@ mod tests {
         let sink   = addr("0x30000000000000000000000000000000000000aa");
 
         // Scatter-gather: source -> i1 -> sink, source -> i2 -> sink
-        assert!(!d.proposer_check_tx(source, i1, U256::from(5), 10, parent_hash(9)));
-        assert!(!d.proposer_check_tx(i1, sink, U256::from(5), 10, parent_hash(9)));
-        assert!(!d.proposer_check_tx(source, i2, U256::from(5), 10, parent_hash(9)));
+        assert!(!d.proposer_check_tx(source, i1, U256::from(5), ZERO_ADDRESS, 10, parent_hash(9)));
+        assert!(!d.proposer_check_tx(i1, sink, U256::from(5), ZERO_ADDRESS, 10, parent_hash(9)));
+        assert!(!d.proposer_check_tx(source, i2, U256::from(5), ZERO_ADDRESS, 10, parent_hash(9)));
         // This final edge should trigger (bottlenecks sum to 10 > 8)
-        assert!( d.proposer_check_tx(i2, sink, U256::from(5), 10, parent_hash(9)));
+        assert!( d.proposer_check_tx(i2, sink, U256::from(5), ZERO_ADDRESS, 10, parent_hash(9)));
 
         // Gather-scatter (hub): multiple sources -> hub -> one receiver
         let mut d2 = AMLMotifDetector::new(cfg());
@@ -609,10 +629,10 @@ mod tests {
         let s2 = addr("0x4000000000000000000000000000000000000002");
         let hub = addr("0x40000000000000000000000000000000000000bb");
         let recv = addr("0x40000000000000000000000000000000000000bc");
-        assert!(!d2.proposer_check_tx(s1, hub, U256::from(5), 10, parent_hash(9)));
-        assert!(!d2.proposer_check_tx(s2, hub, U256::from(5), 10, parent_hash(9)));
+        assert!(!d2.proposer_check_tx(s1, hub, U256::from(5), ZERO_ADDRESS, 10, parent_hash(9)));
+        assert!(!d2.proposer_check_tx(s2, hub, U256::from(5), ZERO_ADDRESS, 10, parent_hash(9)));
         // Hub to receiver (sum bottlenecks = 10 > threshold 8)
-        assert!( d2.proposer_check_tx(hub, recv, U256::from(10), 10, parent_hash(9)));
+        assert!( d2.proposer_check_tx(hub, recv, U256::from(10), ZERO_ADDRESS, 10, parent_hash(9)));
     }
 
     // --------------------------------
@@ -625,7 +645,7 @@ mod tests {
         let block = 20;
         // 3 senders -> sink to exceed count threshold (2)
         let txs: Vec<_> = (0..3).map(|i| {
-            (addr(&format!("0xf10000000000000000000000000000000000000{}", i + 2)),
+            (ZERO_ADDRESS, addr(&format!("0xf10000000000000000000000000000000000000{}", i + 2)),
              sink,
              U256::from(5))
         })
@@ -648,7 +668,7 @@ mod tests {
 
         // Commit blocks 0..=6 (window_blocks=5 -> keeps blocks 1..=6 at current_block=6)
         for blk in 0..=6 {
-            let txs = vec![(a, b, U256::from(1))];
+            let txs = vec![(ZERO_ADDRESS, a, b, U256::from(1))];
             let parent = parent_hash(0);
             let idx: Vec<usize> = (0..txs.len()).collect();
             assert!(!d.consensus_validate_block(&txs, blk, parent));
