@@ -179,13 +179,13 @@ impl AMLMotifDetector {
     // --------------------------------------------------------------------
     /// Called during consensus to validate an entire block.
     /// Works for both proposers (who have building_edges) and validators (who don't).
-    /// Returns `true` if any tx creates a forbidden motif.
+    /// Return vector of illicit tx indices
     pub fn consensus_validate_block(
         &mut self,
         txs: &[(Address, Address, Address, U256)], // token sender receiver amount
         block: u64,
         parent_hash: B256,
-    ) -> bool {
+    ) -> Vec<usize> {
         let is_self_built = self
             .building_block
             .as_ref()
@@ -201,39 +201,37 @@ impl AMLMotifDetector {
         }
 
         // Validate all transactions incrementally
+        let mut illicit_indices = Vec::new();
         let mut temp_edges: Vec<EvalResult> = Vec::new();
 
 
-        for &(token, from, to, amount) in txs {
+        for (idx, &(token, from, to, amount)) in txs.iter().enumerate() {
             let res = self.evaluate_edge_incremental(token, from, to, amount, block);
 
             if res.suspicious() {
-                // rollback the current edge
+                // Mark this tx as illicit
+                illicit_indices.push(idx);
+
+                // Rollback just this edge (not all previous ones!)
                 let _ = self.graph.remove_edge(res.edge_idx);
                 if res.from_created { self.remove_node_created(res.from_idx); }
-                if res.to_created   { self.remove_node_created(res.to_idx); }
+                if res.to_created { self.remove_node_created(res.to_idx); }
 
-                // rollback all accumulated temp edges
-                for prev in temp_edges.drain(..) {
-                    let _ = self.graph.remove_edge(prev.edge_idx);
-                    if prev.from_created { self.remove_node_created(prev.from_idx); }
-                    if prev.to_created   { self.remove_node_created(prev.to_idx); }
-                }
-
-                return true; // block contains prohibited motif
+                // Continue checking remaining txs
             } else {
+                // This tx is clean, keep it in temp
                 temp_edges.push(res);
             }
         }
 
-        // Success path: remove all temp edges and nodes created for validation only
+        // Rollback ALL temp edges (validation doesn't commit anything)
         for res in temp_edges.drain(..) {
             let _ = self.graph.remove_edge(res.edge_idx);
             if res.from_created { self.remove_node_created(res.from_idx); }
-            if res.to_created   { self.remove_node_created(res.to_idx); }
+            if res.to_created { self.remove_node_created(res.to_idx); }
         }
 
-        false
+        illicit_indices
     }
 
     // --------------------------------------------------------------------
@@ -650,7 +648,7 @@ mod tests {
              U256::from(5))
         })
             .collect();
-        assert!(d.consensus_validate_block(&txs, block, parent_hash(block-1)));
+        assert!(d.consensus_validate_block(&txs, block, parent_hash(block-1)).len() > 0);
         // All temp edges rolled back
         assert_eq!(d.graph.edge_count(), 0);
         assert!(d.building_block.is_none());
@@ -671,7 +669,7 @@ mod tests {
             let txs = vec![(ZERO_ADDRESS, a, b, U256::from(1))];
             let parent = parent_hash(0);
             let idx: Vec<usize> = (0..txs.len()).collect();
-            assert!(!d.consensus_validate_block(&txs, blk, parent));
+            assert!(d.consensus_validate_block(&txs, blk, parent).len() == 0);
             d.block_commit(blk, parent, &txs, &idx);
         }
         // Inclusive boundary: blocks 1..=6 remain -> 6 edges

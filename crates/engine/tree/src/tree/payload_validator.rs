@@ -44,7 +44,7 @@ use reth_trie::{updates::TrieUpdates, HashedPostState, TrieInput};
 use reth_trie_db::{DatabaseHashedPostState, StateCommitment};
 use reth_trie_parallel::root::{ParallelStateRoot, ParallelStateRootError};
 use std::{collections::HashMap, sync::Arc, time::Instant};
-use alloy_consensus::Transaction;
+use alloy_consensus::{Transaction, TxReceipt};
 use tracing::{debug, error, info, trace, warn};
 use aml_engine::aml::{AML_EVALUATOR};
 use alloy_sol_types::{sol, SolCall};
@@ -464,8 +464,8 @@ where
         trace!(target: "engine::tree", block=?block_num_hash, "Validating block consensus");
         // validate block consensus rules
         ensure_ok!(self.validate_block_inner(&block));
-
-        ensure_ok!(self.validate_aml(&block, &state_provider));
+        info!("Inside block validator, about to call validate aml {:?} {:?}", block_num_hash, block.number());
+        ensure_ok!(self.validate_aml(&block, &state_provider, &output));
 
         // now validate against the parent
         if let Err(e) =
@@ -653,7 +653,8 @@ where
     fn validate_aml<S: StateProvider>(
         &self,
         block: &RecoveredBlock<N::Block>,
-        state: &S
+        state: &S,
+        output: &BlockExecutionOutput<<N as NodePrimitives>::Receipt>
     ) -> Result<(), ConsensusError> {
 
         // TODO: (ms) Add the AML profile consensus rule check here
@@ -665,12 +666,18 @@ where
 
         let transactions = block.clone_transactions_recovered().collect::<Vec<_>>();
         // TODO: (ms) if transaction didn't execute successfully, dont update the AML profile
-        // Assumption is that validation is done before block is even executed (Optimistic)
+        // Assumption is that validation is done after block is even executed
         // Collect AML-relevant tx info with their original indexes
         let aml_txs: Vec<(usize, Address, Address, Address, U256)> = transactions
             .iter()
             .enumerate()
-            .filter_map(|(idx, tx)| {
+            .zip(output.receipts.iter())
+            .filter_map(|((idx, tx), receipt)| {
+                // Skip failed transactions
+                if !receipt.status() {
+                    return None;
+                }
+
                 if tx.inner().function_selector() != Some(&Selector::from(hex!("a9059cbb"))) {
                     return None;
                 }
@@ -716,7 +723,8 @@ where
 
         drop(aml_evaluator); // release lock ASAP
 
-        if aml_suspicious {
+        // We will be ignoring this, instead some external consensus way to decide how to proceed
+        if aml_suspicious.len() != 0 {
             return Err(ConsensusError::Other("AML consensus failed".to_string()));
         }
 

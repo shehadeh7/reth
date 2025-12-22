@@ -43,6 +43,8 @@ use aml_engine::aml::AML_EVALUATOR;
 
 mod config;
 pub use config::*;
+use reth_evm::block::CommitChanges;
+
 sol! {
     function transfer(address to, uint256 amount);
 }
@@ -290,56 +292,66 @@ where
             };
         }
 
-        // TODO: (ms) handle updating AML profile here
-        if pool_tx.transaction.function_selector() == Some(&Selector::from(hex!("a9059cbb"))) {
-            if let Ok(decoded) = transferCall::abi_decode(&pool_tx.transaction.input()) {
-                let token_address = pool_tx.to().unwrap();
-                // Check if contract opted into AML
-                if aml_evaluator.supports_aml_interface(token_address, &state_provider) {
-                    let sender = pool_tx.sender();
-                    let recipient = decoded.to;
-                    let amount = decoded.amount;
-                    // TODO: Decide if we should also limit this to just EOA transfers instead of involving DEXs/Smart contracts?
-                    let sender_is_eoa = state_provider
-                        .account_code(&sender)
-                        .unwrap_or(None)
-                        .is_none();
+        let gas_used = match builder.execute_transaction_with_commit_condition(tx.clone(), |exec_res| {
+           let succeeded = exec_res.is_success();
 
-                    let recipient_is_eoa = state_provider
-                        .account_code(&recipient)
-                        .unwrap_or(None)
-                        .is_none();
+            if !succeeded {
+                return CommitChanges::Yes; // default behaviour
+            }
 
-                    // Optional: skip if txs are not between EOAs
-                    if !sender_is_eoa || !recipient_is_eoa {
-                        continue;
-                    }
+            // TODO: (ms) handle updating AML profile here
+            if pool_tx.transaction.function_selector() == Some(&Selector::from(hex!("a9059cbb"))) {
+                if let Ok(decoded) = transferCall::abi_decode(&pool_tx.transaction.input()) {
+                    let token_address = pool_tx.to().unwrap();
+                    // Check if contract opted into AML
+                    // TODO: look into expansion to look into ALL erc20 transfers from transfer logs instead of just EOA
+                    if aml_evaluator.supports_aml_interface(token_address, &state_provider) {
+                        let sender = pool_tx.sender();
+                        let recipient = decoded.to;
+                        let amount = decoded.amount;
+                        // TODO: Decide if we should also limit this to just EOA transfers instead of involving DEXs/Smart contracts?
+                        let sender_is_eoa = state_provider
+                            .account_code(&sender)
+                            .unwrap_or(None)
+                            .is_none();
 
-                    let start = Instant::now();
-                    let (failed_aml, reason) = aml_evaluator.check_mempool_tx(token_address, sender, recipient, amount, block_number, parent_header.hash());
-                    let elapsed = start.elapsed();
-                    println!(
-                        "AML check_mempool_tx took {:?}",
-                        elapsed,
-                    );
-                    if failed_aml {
-                        print!("Transaction hash {:?} failed", pool_tx.transaction.hash());
-                        best_txs.mark_invalid(
-                            &pool_tx,
-                            InvalidPoolTransactionError::AMLRulesFailed,
-                        );
-                        // Discard the transaction
-                        // TODO: Consider whether "and_descendants" is needed here or just the tx
-                        pool.remove_transactions_and_descendants(vec![*pool_tx.hash()]);
-                        continue
-                    } else {
-                        println!("AML passed ✅");
+                        let recipient_is_eoa = state_provider
+                            .account_code(&recipient)
+                            .unwrap_or(None)
+                            .is_none();
+
+                        // Optional: skip if txs are not between EOAs
+                        if sender_is_eoa && recipient_is_eoa {
+                            println!("Sender {:?}, recipient {:?}, amount {:?}", sender, recipient, amount);
+
+                            let start = Instant::now();
+                            let (failed_aml, reason) = aml_evaluator.check_mempool_tx(token_address, sender, recipient, amount, block_number, parent_header.hash());
+                            let elapsed = start.elapsed();
+                            println!(
+                                "AML check_mempool_tx took {:?}",
+                                elapsed,
+                            );
+                            if failed_aml {
+                                print!("Transaction hash {:?} failed", pool_tx.transaction.hash());
+                                best_txs.mark_invalid(
+                                    &pool_tx,
+                                    InvalidPoolTransactionError::AMLRulesFailed,
+                                );
+                                // Discard the transaction
+                                // TODO: Consider whether "and_descendants" is needed here or just the tx
+                                pool.remove_transactions_and_descendants(vec![*pool_tx.hash()]);
+                                return CommitChanges::No; // TODO: Figure out if gas should still be charged for failed AML cases?
+                            } else {
+                                println!("AML passed ✅");
+                            }
+                        }
+
                     }
                 }
             }
-        }
 
-        let gas_used = match builder.execute_transaction(tx.clone()) {
+            CommitChanges::Yes
+        }) {
             Ok(gas_used) => gas_used,
             Err(BlockExecutionError::Validation(BlockValidationError::InvalidTx {
                 error, ..
@@ -364,6 +376,10 @@ where
             Err(err) => return Err(PayloadBuilderError::evm(err)),
         };
 
+        if gas_used.is_none() {
+            continue
+        }
+
         // add to the total blob gas used if the transaction successfully executed
         if let Some(blob_tx) = tx.as_eip4844() {
             block_blob_count += blob_tx.tx().blob_versioned_hashes.len() as u64;
@@ -377,8 +393,8 @@ where
         // update and add to total fees
         let miner_fee =
             tx.effective_tip_per_gas(base_fee).expect("fee is always valid; execution succeeded");
-        total_fees += U256::from(miner_fee) * U256::from(gas_used);
-        cumulative_gas_used += gas_used;
+        total_fees += U256::from(miner_fee) * U256::from(gas_used.unwrap());
+        cumulative_gas_used += gas_used.unwrap();
 
         // Add blob tx sidecar to the payload.
         if let Some(sidecar) = blob_tx_sidecar {

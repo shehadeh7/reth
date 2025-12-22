@@ -96,9 +96,9 @@ impl AmlEvaluator {
         transactions: &[(Address, Address, Address, U256)],
         block_number: u64,
         parent_hash: B256,
-    ) -> bool {
+    ) -> Vec<usize> {
         if transactions.is_empty() {
-            return false;
+            return Vec::new();
         }
         // let filtered: Vec<(Address, Address, U256)> =
         //     transactions.iter().map(|&(_, a, b, v)| (a, b, v)).collect();
