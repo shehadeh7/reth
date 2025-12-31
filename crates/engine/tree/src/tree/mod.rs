@@ -1916,8 +1916,7 @@ where
 
             let mut new_blocks = Vec::new();
             for block in new.iter() {
-                let mut all_txs = Vec::new();
-                let mut successful_indices = Vec::new();
+                let mut successful_txs = Vec::new();
                 let state_provider = self.provider.state_by_block_hash(tip.hash()).unwrap();
                 if let Some(receipts) = block.execution_output.receipts.get(0) {
                     for (tx, receipt) in block.block.recovered_block.transactions_recovered().zip(receipts) {
@@ -1952,11 +1951,8 @@ where
                                 continue;
                             }
 
-                            let current_index = all_txs.len();
-                            all_txs.push((token, sender, recipient, amount));
-
                             if receipt.status() {
-                                successful_indices.push(current_index);
+                                successful_txs.push((token, sender, recipient, amount));
                             }
                         }
                     }
@@ -1965,8 +1961,7 @@ where
                 new_blocks.push((
                     block.recovered_block().number(),
                     block.recovered_block().parent_hash(),
-                    all_txs,
-                    successful_indices,
+                    successful_txs
                 ));
             }
 
@@ -2232,6 +2227,7 @@ where
         self.metrics.engine.executed_blocks.set(self.state.tree_state.block_count() as f64);
 
         // check receipts from executed block receipt to figure out transactions that run
+        info!("Inside block commit, about to call commit aml {:?} {:?}", block_num_hash, executed.block.recovered_block.number());
         let mut aml_evaluator = AML_EVALUATOR
             .get()
             .expect("AML_EVALUATOR not initialized")
@@ -2239,8 +2235,7 @@ where
             .expect("poisoned lock");
 
         if let Some(receipts) = executed.execution_output.receipts.get(0) {
-            let mut all_txs = Vec::new();
-            let mut successful_indices = Vec::new();
+            let mut successful_txs = Vec::new();
             let state_provider = self.provider.state_by_block_hash(block_id.parent).unwrap();
             for (tx, receipt) in executed.block.recovered_block.transactions_recovered().zip(receipts) {
                 let tx_recovered = tx.try_clone_into_recovered_unchecked().unwrap();
@@ -2274,13 +2269,8 @@ where
                         continue;
                     }
 
-                    // Track the index in all_txs where we add this transaction
-                    let current_index = all_txs.len();
-                    all_txs.push((token, sender, recipient, amount));
-
-                    // Only add to successful_indices if the receipt shows success
                     if receipt.status() {
-                        successful_indices.push(current_index);
+                        successful_txs.push((token, sender, recipient, amount));
                     }
                 }
             }
@@ -2290,8 +2280,7 @@ where
             aml_evaluator.update_profiles_batch(
                 executed.block.recovered_block.number(),
                 executed.block.recovered_block.parent_hash(),
-                &all_txs,
-                &successful_indices,
+                &successful_txs,
             );
             let elapsed = start.elapsed();
             println!(

@@ -1,6 +1,6 @@
 use crate::account_profile::{AccountProfile};
 use alloy_primitives::{keccak256, Address, FixedBytes, B256, U256};
-use std::collections::{HashMap};
+use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
 use std::str::FromStr;
 use std::sync::{OnceLock, RwLock};
@@ -59,7 +59,7 @@ pub struct AmlEvaluator {
 impl AmlEvaluator {
     pub fn new() -> Self {
         let motif_config: Config = Config {
-            window_blocks: 300,
+            window_blocks: 100,
             fan_in_count_threshold: 100000000000,
             fan_in_sum_threshold: U256::from_str("100000000000000000000000000000000").unwrap(),
             scatter_gather_threshold: U256::from_str("100000000000000000000000000000000").unwrap(),
@@ -109,32 +109,52 @@ impl AmlEvaluator {
         &mut self,
         block: u64,
         parent_hash: B256,
-        all_txs: &[(Address, Address, Address, U256)],
-        successful_indices: &[usize],
+        successful_txs: &[(Address, Address, Address, U256)]
     ) {
-        println!("all_txs {:?}", all_txs.len());
-        println!("successful_indices len {:?}", successful_indices.len());
-        self.motif_detector.block_commit(block, parent_hash, all_txs, successful_indices);
+        println!("successful_txs {:?}", successful_txs.len());
+        self.motif_detector.block_commit(block, parent_hash, successful_txs);
     }
 
     /// Reorg/fork handling
     pub fn handle_reorg(
         &mut self,
         old_blocks: &[u64],
-        new_blocks: &[(u64, B256, Vec<(Address, Address, Address, U256)>, Vec<usize>)],
+        new_blocks: &[(u64, B256, Vec<(Address, Address, Address, U256)>)],
     ) {
-        // Step 1: Revert motif detector
-        self.motif_detector.reorg_revert(old_blocks);
+        let old_set: HashSet<u64> = old_blocks.iter().copied().collect();
+        let new_blocks_map: HashMap<u64, &(u64, B256, Vec<(Address, Address, Address, U256)>)> =
+            new_blocks.iter().map(|b| (b.0, b)).collect();
+        let new_set: HashSet<u64> = new_blocks_map.keys().copied().collect();
 
-        // Step 2: Apply new canonical blocks
-        for (block_number, parent_hash, all_txs, successful_indices) in new_blocks {
-            self.motif_detector.block_commit(
-                *block_number,
-                *parent_hash,
-                all_txs,
-                successful_indices,
-            );
-        }
+        // Determine window boundary
+        let current_tip = self.motif_detector.block_queue.back().copied();
+        let window_start = current_tip
+            .map(|tip| tip.saturating_sub(self.motif_detector.config.window_blocks))
+            .unwrap_or(0);
+
+        // Categorize blocks
+        let blocks_in_both: Vec<u64> = old_set.intersection(&new_set)
+            .filter(|&&b| b >= window_start)
+            .copied()
+            .collect();
+
+        let blocks_only_in_old: Vec<u64> = old_set.difference(&new_set)
+            .filter(|&&b| b >= window_start)
+            .copied()
+            .collect();
+
+        let blocks_only_in_new: Vec<u64> = new_set.difference(&old_set)
+            .filter(|&&b| b >= window_start)
+            .copied()
+            .collect();
+
+        // Execute reorg
+        self.motif_detector.execute_reorg(
+            &blocks_in_both,
+            &blocks_only_in_old,
+            &blocks_only_in_new,
+            &new_blocks_map,
+        );
     }
 
     /// Checks if the token address is onboarded to AML check
@@ -185,5 +205,223 @@ impl AmlEvaluator {
         self.aml_support_cache.insert(contract_address, supports_aml);
 
         supports_aml
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_handle_reorg_all_cases() {
+        // Setup: Create motif detector with initial state
+        let mut detector = AmlEvaluator::new();
+
+        // Initial state: Add blocks 100, 101, 102, 103 to the graph
+        let addr1 = Address::from([1u8; 20]);
+        let addr2 = Address::from([2u8; 20]);
+        let addr3 = Address::from([3u8; 20]);
+        let addr4 = Address::from([4u8; 20]);
+        let token = Address::ZERO;
+        let parent_hash = B256::ZERO;
+
+        // Block 100: addr1 -> addr2 (100 tokens)
+        detector.update_profiles_batch(
+            100,
+            parent_hash,
+            &[(token, addr1, addr2, U256::from(100))],
+        );
+
+        // Block 101: addr2 -> addr3 (200 tokens)
+        detector.update_profiles_batch(
+            101,
+            parent_hash,
+            &[(token, addr2, addr3, U256::from(200))],
+        );
+
+        // Block 102: addr3 -> addr4 (300 tokens)
+        detector.update_profiles_batch(
+            102,
+            parent_hash,
+            &[(token, addr3, addr4, U256::from(300))],
+        );
+
+        // Block 103: addr4 -> addr1 (400 tokens)
+        detector.update_profiles_batch(
+            103,
+            parent_hash,
+            &[(token, addr4, addr1, U256::from(400))],
+        );
+
+        // Verify initial state
+        assert_eq!(detector.motif_detector.block_queue.len(), 4);
+        assert_eq!(detector.motif_detector.per_block_edges.len(), 4);
+        assert_eq!(detector.motif_detector.graph.node_count(), 4);
+        assert_eq!(detector.motif_detector.graph.edge_count(), 4);
+
+        // Reorg scenario:
+        // - Block 101: in BOTH (update: addr2 -> addr3 now with 250 tokens instead of 200)
+        // - Block 102: ONLY in old (will be removed)
+        // - Block 103: in BOTH (update: addr4 -> addr1 now with 450 tokens)
+        // - Block 104: ONLY in new (new block: addr1 -> addr3, 500 tokens)
+
+        let old_blocks = vec![101, 102, 103];
+        let new_blocks = vec![
+            // Block 101: updated transaction
+            (101, parent_hash, vec![(token, addr2, addr3, U256::from(250))]),
+            // Block 103: updated transaction
+            (103, parent_hash, vec![(token, addr4, addr1, U256::from(450))]),
+            // Block 104: brand new block
+            (104, parent_hash, vec![(token, addr1, addr3, U256::from(500))]),
+        ];
+
+        // Execute reorg
+        detector.handle_reorg(&old_blocks, &new_blocks);
+
+        // Verify final state
+        // Block queue should have: 100, 101, 103, 104 (102 removed)
+        assert_eq!(detector.motif_detector.block_queue.len(), 4);
+        let queue_vec: Vec<u64> = detector.motif_detector.block_queue.iter().copied().collect();
+        assert_eq!(queue_vec, vec![100, 101, 103, 104]);
+
+        // per_block_edges should have entries for 100, 101, 103, 104
+        assert_eq!(detector.motif_detector.per_block_edges.len(), 4);
+        assert!(detector.motif_detector.per_block_edges.contains_key(&100));
+        assert!(detector.motif_detector.per_block_edges.contains_key(&101));
+        assert!(!detector.motif_detector.per_block_edges.contains_key(&102)); // Removed
+        assert!(detector.motif_detector.per_block_edges.contains_key(&103));
+        assert!(detector.motif_detector.per_block_edges.contains_key(&104));
+
+        // Verify edges were updated correctly
+        // Block 101: should have 1 edge with amount 250
+        let block_101_edges = &detector.motif_detector.per_block_edges[&101];
+        assert_eq!(block_101_edges.len(), 1);
+        let edge_101 = detector.motif_detector.graph.edge_weight(block_101_edges[0]).unwrap();
+        assert_eq!(edge_101.amount, U256::from(250));
+        assert_eq!(edge_101.block, 101);
+
+        // Block 103: should have 1 edge with amount 450
+        let block_103_edges = &detector.motif_detector.per_block_edges[&103];
+        assert_eq!(block_103_edges.len(), 1);
+        let edge_103 = detector.motif_detector.graph.edge_weight(block_103_edges[0]).unwrap();
+        assert_eq!(edge_103.amount, U256::from(450));
+        assert_eq!(edge_103.block, 103);
+
+        // Block 104: should have 1 edge with amount 500
+        let block_104_edges = &detector.motif_detector.per_block_edges[&104];
+        assert_eq!(block_104_edges.len(), 1);
+        let edge_104 = detector.motif_detector.graph.edge_weight(block_104_edges[0]).unwrap();
+        assert_eq!(edge_104.amount, U256::from(500));
+        assert_eq!(edge_104.block, 104);
+
+        // Total edges should be 4 (blocks 100, 101, 103, 104)
+        assert_eq!(detector.motif_detector.graph.edge_count(), 4);
+
+        // All 4 nodes should still exist (no orphans in this case)
+        assert_eq!(detector.motif_detector.graph.node_count(), 4);
+
+        println!("{:?}", detector.motif_detector.block_queue);
+        println!("✓ All reorg cases validated successfully");
+    }
+
+    #[test]
+    fn test_reorg_with_orphaned_nodes() {
+        // Setup
+        let mut detector = AmlEvaluator::new();
+
+        let addr1 = Address::from([1u8; 20]);
+        let addr2 = Address::from([2u8; 20]);
+        let addr3 = Address::from([3u8; 20]);
+        let addr_isolated = Address::from([99u8; 20]); // Will become orphaned
+        let token = Address::ZERO;
+        let parent_hash = B256::ZERO;
+
+        // Block 100: addr1 -> addr2
+        detector.update_profiles_batch(
+            100,
+            parent_hash,
+            &[(token, addr1, addr2, U256::from(100))],
+        );
+
+        // Block 101: addr2 -> addr_isolated (this will be removed, orphaning addr_isolated)
+        detector.update_profiles_batch(
+            101,
+            parent_hash,
+            &[(token, addr2, addr_isolated, U256::from(200))],
+        );
+
+        // Block 102: addr1 -> addr3
+        detector.update_profiles_batch(
+            102,
+            parent_hash,
+            &[(token, addr1, addr3, U256::from(300))],
+        );
+
+        // Initial state: 4 nodes (addr1, addr2, addr3, addr_isolated)
+        assert_eq!(detector.motif_detector.graph.node_count(), 4);
+
+        // Reorg: remove block 101, keep 100 and 102
+        let old_blocks = vec![101];
+        let new_blocks = vec![]; // Block 101 removed, nothing replaces it
+
+        detector.handle_reorg(&old_blocks, &new_blocks);
+
+        // Block queue should have: 100, 102
+        assert_eq!(detector.motif_detector.block_queue.len(), 2);
+        let queue_vec: Vec<u64> = detector.motif_detector.block_queue.iter().copied().collect();
+        assert_eq!(queue_vec, vec![100, 102]);
+
+        // addr_isolated should be removed (orphaned)
+        assert_eq!(detector.motif_detector.graph.node_count(), 3);
+        assert!(!detector.motif_detector.node_map.contains_key(&addr_isolated));
+
+        // Other nodes should still exist
+        assert!(detector.motif_detector.node_map.contains_key(&addr1));
+        assert!(detector.motif_detector.node_map.contains_key(&addr2));
+        assert!(detector.motif_detector.node_map.contains_key(&addr3));
+
+        println!("{:?}", detector.motif_detector.block_queue);
+        println!("✓ Orphaned node removal validated successfully");
+    }
+
+    #[test]
+    fn test_reorg_maintains_block_queue_order() {
+        // Setup
+        let mut detector = AmlEvaluator::new();
+
+        let addr1 = Address::from([1u8; 20]);
+        let addr2 = Address::from([2u8; 20]);
+        let token = Address::ZERO;
+        let parent_hash = B256::ZERO;
+
+        // Add blocks in order: 100, 101, 102, 103, 104
+        for block in 100..=104 {
+            detector.update_profiles_batch(
+                block,
+                parent_hash,
+                &[(token, addr1, addr2, U256::from(block as u128))],
+            );
+        }
+
+        // Reorg: remove 102, add 105 and 106
+        let old_blocks = vec![102];
+        let new_blocks = vec![
+            (105, parent_hash, vec![(token, addr1, addr2, U256::from(105))]),
+            (106, parent_hash, vec![(token, addr1, addr2, U256::from(106))]),
+        ];
+
+        detector.handle_reorg(&old_blocks, &new_blocks);
+
+        // Block queue should be sorted: 100, 101, 103, 104, 105, 106
+        let queue_vec: Vec<u64> = detector.motif_detector.block_queue.iter().copied().collect();
+        assert_eq!(queue_vec, vec![100, 101, 103, 104, 105, 106]);
+
+        // Verify it's actually sorted
+        let mut sorted = queue_vec.clone();
+        sorted.sort_unstable();
+        assert_eq!(queue_vec, sorted);
+
+        println!("{:?}", detector.motif_detector.block_queue);
+        println!("✓ Block queue order maintained correctly");
     }
 }
