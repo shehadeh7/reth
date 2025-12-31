@@ -2301,7 +2301,7 @@ where
                 let mut successful_txs = Vec::new();
                 let state_provider = self.provider.state_by_block_hash(tip.hash()).unwrap();
                 if let Some(receipts) = block.execution_output.receipts.get(0) {
-                    for (tx, receipt) in block.block.recovered_block.transactions_recovered().zip(receipts) {
+                    for (tx, receipt) in block.recovered_block.transactions_recovered().zip(receipts) {
                         let tx_recovered = tx.try_clone_into_recovered_unchecked().unwrap();
 
                         if tx_recovered.inner().function_selector() != Some(&Selector::from(hex!("a9059cbb"))) {
@@ -2349,7 +2349,7 @@ where
 
             aml_evaluator.handle_reorg(&old_blocks, &new_blocks);
 
-            self.reinsert_reorged_blocks(old);
+            self.reinsert_reorged_blocks(old.clone());
         }
 
         // update the tracked in-memory state with the new chain
@@ -2624,7 +2624,7 @@ where
         self.metrics.engine.executed_blocks.set(self.state.tree_state.block_count() as f64);
 
         // check receipts from executed block receipt to figure out transactions that run
-        info!("Inside block commit, about to call commit aml {:?} {:?}", block_num_hash, executed.block.recovered_block.number());
+        info!("Inside block commit, about to call commit aml {:?} {:?}", block_num_hash, executed.recovered_block.number());
         let mut aml_evaluator = AML_EVALUATOR
             .get()
             .expect("AML_EVALUATOR not initialized")
@@ -2634,7 +2634,7 @@ where
         if let Some(receipts) = executed.execution_output.receipts.get(0) {
             let mut successful_txs = Vec::new();
             let state_provider = self.provider.state_by_block_hash(block_id.parent).unwrap();
-            for (tx, receipt) in executed.block.recovered_block.transactions_recovered().zip(receipts) {
+            for (tx, receipt) in executed.recovered_block.transactions_recovered().zip(receipts) {
                 let tx_recovered = tx.try_clone_into_recovered_unchecked().unwrap();
 
                 if tx_recovered.inner().function_selector() != Some(&Selector::from(hex!("a9059cbb"))) {
@@ -2675,8 +2675,8 @@ where
             let start = Instant::now();
             // Commit block with all transactions and successful indices
             aml_evaluator.update_profiles_batch(
-                executed.block.recovered_block.number(),
-                executed.block.recovered_block.parent_hash(),
+                executed.recovered_block.number(),
+                executed.recovered_block.parent_hash(),
                 &successful_txs,
             );
             let elapsed = start.elapsed();

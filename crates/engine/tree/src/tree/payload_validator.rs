@@ -17,9 +17,6 @@ use alloy_evm::Evm;
 use rayon::prelude::*;
 use reth_chain_state::{CanonicalInMemoryState, DeferredTrieData, ExecutedBlock};
 use alloy_primitives::{hex, Address, Selector, B256, U256};
-use reth_chain_state::{
-    CanonicalInMemoryState, ExecutedBlock, ExecutedBlockWithTrieUpdates, ExecutedTrieUpdates,
-};
 use reth_consensus::{ConsensusError, FullConsensus};
 use reth_engine_primitives::{
     ConfigureEngineEvm, ExecutableTxIterator, ExecutionPayload, InvalidBlockHook, PayloadValidator,
@@ -46,7 +43,6 @@ use reth_revm::db::State;
 use reth_storage_errors::db::DatabaseError;
 use reth_trie::{updates::TrieUpdates, HashedPostState, StateRoot, TrieInputSorted};
 use reth_trie_parallel::root::{ParallelStateRoot, ParallelStateRootError};
-use revm_primitives::Address;
 use std::{
     collections::HashMap,
     panic::{self, AssertUnwindSafe},
@@ -54,9 +50,7 @@ use std::{
     time::Instant,
 };
 use tracing::{debug, debug_span, error, info, instrument, trace, warn};
-use std::{collections::HashMap, sync::Arc, time::Instant};
 use alloy_consensus::{Transaction, TxReceipt};
-use tracing::{debug, error, info, trace, warn};
 use aml_engine::aml::{AML_EVALUATOR};
 use alloy_sol_types::{sol, SolCall};
 sol! {
@@ -446,7 +440,7 @@ where
         }
 
         // Execute the block and handle any execution errors
-        let (output, senders) = match self.execute_block(state_provider, env, &input, &mut handle) {
+        let (output, senders) = match self.execute_block(&state_provider, env, &input, &mut handle) {
             Ok(output) => output,
             Err(err) => return self.handle_execution_error(input, err, &parent_block),
         };
@@ -462,7 +456,7 @@ where
         );
 
         info!("Inside block validator, about to call validate aml {:?} {:?}", block_num_hash, block.number());
-        ensure_ok!(self.validate_aml(&block, &state_provider, &output));
+        ensure_ok_post_block!(self.validate_aml(&block, &state_provider, &output), block);
 
         let root_time = Instant::now();
         let mut maybe_state_root = None;
@@ -615,75 +609,75 @@ where
     ) -> Result<(), ConsensusError> {
 
         // TODO: (ms) Add the AML profile consensus rule check here
-        let mut aml_evaluator = AML_EVALUATOR
-            .get()
-            .expect("AML_EVALUATOR not initialized")
-            .write()
-            .expect("poisoned lock");
-
-        let transactions = block.clone_transactions_recovered().collect::<Vec<_>>();
-        // TODO: (ms) if transaction didn't execute successfully, dont update the AML profile
-        // Assumption is that validation is done after block is even executed
-        // Collect AML-relevant tx info with their original indexes
-        let aml_txs: Vec<(usize, Address, Address, Address, U256)> = transactions
-            .iter()
-            .enumerate()
-            .zip(output.receipts.iter())
-            .filter_map(|((idx, tx), receipt)| {
-                // Skip failed transactions
-                if !receipt.status() {
-                    return None;
-                }
-
-                if tx.inner().function_selector() != Some(&Selector::from(hex!("a9059cbb"))) {
-                    return None;
-                }
-
-                let decoded = transferCall::abi_decode(&tx.input()).ok()?;
-                let sender = tx.signer();
-                let token = tx.to().unwrap();
-
-                if !aml_evaluator.supports_aml_interface(token, state) {
-                    // Contract doesn't support AML, skip validation
-                    return None;
-                }
-
-                let sender_is_eoa = state
-                    .account_code(&sender)
-                    .unwrap_or(None)
-                    .is_none();
-
-                let recipient_is_eoa = state
-                    .account_code(&decoded.to)
-                    .unwrap_or(None)
-                    .is_none();
-
-                // Optional: skip if txs are not between EOAs
-                if !sender_is_eoa || !recipient_is_eoa {
-                    return None;
-                }
-
-                Option::from((idx, token, sender, decoded.to, decoded.amount))
-            })
-            .collect();
-
-        // Run AML batch check
-        let aml_inputs = aml_txs.iter().map(|&(_, t, s, r, a)| (t, s, r, a)).collect::<Vec<_>>();
-        let start = Instant::now();
-        println!("aml inputs is {:?}", aml_inputs);
-        let aml_suspicious = aml_evaluator.check_compliance_batch(&aml_inputs, block.number(), block.parent_hash());
-        let elapsed = start.elapsed();
-        println!(
-            "Check compliance batch took {:?}",
-            elapsed,
-        );
-
-        drop(aml_evaluator); // release lock ASAP
-
-        // We will be ignoring this, instead some external consensus way to decide how to proceed
-        if aml_suspicious.len() != 0 {
-            return Err(ConsensusError::Other("AML consensus failed".to_string()));
-        }
+        // let mut aml_evaluator = AML_EVALUATOR
+        //     .get()
+        //     .expect("AML_EVALUATOR not initialized")
+        //     .write()
+        //     .expect("poisoned lock");
+        //
+        // let transactions = block.clone_transactions_recovered().collect::<Vec<_>>();
+        // // TODO: (ms) if transaction didn't execute successfully, dont update the AML profile
+        // // Assumption is that validation is done after block is even executed
+        // // Collect AML-relevant tx info with their original indexes
+        // let aml_txs: Vec<(usize, Address, Address, Address, U256)> = transactions
+        //     .iter()
+        //     .enumerate()
+        //     .zip(output.receipts.iter())
+        //     .filter_map(|((idx, tx), receipt)| {
+        //         // Skip failed transactions
+        //         if !receipt.status() {
+        //             return None;
+        //         }
+        //
+        //         if tx.inner().function_selector() != Some(&Selector::from(hex!("a9059cbb"))) {
+        //             return None;
+        //         }
+        //
+        //         let decoded = transferCall::abi_decode(&tx.input()).ok()?;
+        //         let sender = tx.signer();
+        //         let token = tx.to().unwrap();
+        //
+        //         if !aml_evaluator.supports_aml_interface(token, state) {
+        //             // Contract doesn't support AML, skip validation
+        //             return None;
+        //         }
+        //
+        //         let sender_is_eoa = state
+        //             .account_code(&sender)
+        //             .unwrap_or(None)
+        //             .is_none();
+        //
+        //         let recipient_is_eoa = state
+        //             .account_code(&decoded.to)
+        //             .unwrap_or(None)
+        //             .is_none();
+        //
+        //         // Optional: skip if txs are not between EOAs
+        //         if !sender_is_eoa || !recipient_is_eoa {
+        //             return None;
+        //         }
+        //
+        //         Option::from((idx, token, sender, decoded.to, decoded.amount))
+        //     })
+        //     .collect();
+        //
+        // // Run AML batch check
+        // let aml_inputs = aml_txs.iter().map(|&(_, t, s, r, a)| (t, s, r, a)).collect::<Vec<_>>();
+        // let start = Instant::now();
+        // println!("aml inputs is {:?}", aml_inputs);
+        // let aml_suspicious = aml_evaluator.check_compliance_batch(&aml_inputs, block.number(), block.parent_hash());
+        // let elapsed = start.elapsed();
+        // println!(
+        //     "Check compliance batch took {:?}",
+        //     elapsed,
+        // );
+        //
+        // drop(aml_evaluator); // release lock ASAP
+        //
+        // // We will be ignoring this, instead some external consensus way to decide how to proceed
+        // if aml_suspicious.len() != 0 {
+        //     return Err(ConsensusError::Other("AML consensus failed".to_string()));
+        // }
 
         Ok(())
     }
@@ -692,7 +686,7 @@ where
     #[instrument(level = "debug", target = "engine::tree::payload_validator", skip_all)]
     fn execute_block<S, Err, T>(
         &mut self,
-        state_provider: S,
+        state_provider: &S,
         env: ExecutionEnv<Evm>,
         input: &BlockOrPayload<T>,
         handle: &mut PayloadHandle<impl ExecutableTxFor<Evm>, Err, N::Receipt>,

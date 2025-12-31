@@ -222,7 +222,7 @@ where
     let is_osaka = chain_spec.is_osaka_active_at_timestamp(attributes.timestamp);
 
     // Block number used for new block
-    let block_number = builder.evm_mut().block().number.try_into().unwrap_or_default();
+    let block_number = builder.evm_mut().block().number().try_into().unwrap_or_default();
 
 
     let mut aml_evaluator = AML_EVALUATOR
@@ -364,7 +364,7 @@ where
                                 print!("Transaction hash {:?} failed", pool_tx.transaction.hash());
                                 best_txs.mark_invalid(
                                     &pool_tx,
-                                    InvalidPoolTransactionError::AMLRulesFailed,
+                                    &InvalidPoolTransactionError::AMLRulesFailed,
                                 );
                                 // Discard the transaction
                                 // TODO: Consider whether "and_descendants" is needed here or just the tx
