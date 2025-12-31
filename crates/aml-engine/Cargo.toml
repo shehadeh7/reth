@@ -42,6 +42,7 @@ redb = "2.5.0"
 bincode = "2.0.1"
 lru = "0.16.2"
 rustc-hash = "2.1.1"
+rayon = "1.11.0"
 
 # testing
 rand = { workspace = true, optional = true }
@@ -59,6 +60,9 @@ rand.workspace = true
 proptest.workspace = true
 proptest-arbitrary-interop.workspace = true
 tempfile.workspace = true
+criterion = "0.8.0"
+rand_distr = "0.5.1"
+dhat = "0.3.3"
 
 [features]
 serde = [
@@ -105,3 +109,15 @@ arbitrary = [
     "reth-ethereum-primitives/arbitrary",
     "revm-primitives/arbitrary",
 ]
+
+[[bench]]
+name = "latency_bench"
+harness = false
+
+[[bench]]
+name = "realistic_bench"
+harness = false
+
+[[bench]]
+name = "bench_2"
+harness = false
