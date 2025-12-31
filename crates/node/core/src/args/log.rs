@@ -35,6 +35,10 @@ pub struct LogArgs {
     #[arg(long = "log.file.directory", value_name = "PATH", global = true, default_value_t)]
     pub log_file_directory: PlatformPath<LogsDir>,
 
+    /// The prefix name of the log files.
+    #[arg(long = "log.file.name", value_name = "NAME", global = true, default_value = "reth.log")]
+    pub log_file_name: String,
+
     /// The maximum size (in MB) of one log file.
     #[arg(long = "log.file.max-size", value_name = "SIZE", global = true, default_value_t = 200)]
     pub log_file_max_size: u64,
@@ -57,6 +61,20 @@ pub struct LogArgs {
     )]
     pub journald_filter: String,
 
+    /// Emit traces to samply. Only useful when profiling.
+    #[arg(long = "log.samply", global = true, hide = true)]
+    pub samply: bool,
+
+    /// The filter to use for traces emitted to samply.
+    #[arg(
+        long = "log.samply.filter",
+        value_name = "FILTER",
+        global = true,
+        default_value = "debug",
+        hide = true
+    )]
+    pub samply_filter: String,
+
     /// Sets whether or not the formatter emits ANSI terminal escape codes for colors and other
     /// text formatting.
     #[arg(
@@ -66,6 +84,7 @@ pub struct LogArgs {
         default_value_t = ColorMode::Always
     )]
     pub color: ColorMode,
+
     /// The verbosity settings for the tracer.
     #[command(flatten)]
     pub verbosity: Verbosity,
@@ -86,6 +105,7 @@ impl LogArgs {
     fn file_info(&self) -> FileInfo {
         FileInfo::new(
             self.log_file_directory.clone().into(),
+            self.log_file_name.clone(),
             self.log_file_max_size * MB_TO_BYTES,
             self.log_file_max_files,
         )
@@ -123,6 +143,11 @@ impl LogArgs {
             tracer = tracer.with_file(file, info);
         }
 
+        if self.samply {
+            let config = self.layer_info(LogFormat::Terminal, self.samply_filter.clone(), false);
+            tracer = tracer.with_samply(config);
+        }
+
         let guard = tracer.init_with_layers(layers)?;
         Ok(guard)
     }
@@ -133,7 +158,7 @@ impl LogArgs {
 pub enum ColorMode {
     /// Colors on
     Always,
-    /// Colors on
+    /// Auto-detect
     Auto,
     /// Colors off
     Never,

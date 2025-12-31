@@ -1,4 +1,4 @@
-use alloy_primitives::{bytes::BufMut, keccak256, B256};
+use alloy_primitives::{b256, bytes::BufMut, keccak256, Address, B256};
 use itertools::Itertools;
 use reth_config::config::{EtlConfig, HashingConfig};
 use reth_db_api::{
@@ -27,6 +27,10 @@ const MAXIMUM_CHANNELS: usize = 10_000;
 
 /// Maximum number of storage entries to hash per rayon worker job.
 const WORKER_CHUNK_SIZE: usize = 100;
+
+/// Keccak256 hash of the zero address.
+const HASHED_ZERO_ADDRESS: B256 =
+    b256!("0x5380c7b7ae81a58eb98d9c78de4a1fd7fd9535fc953ed2be602daaa41767312a");
 
 /// Storage hashing stage hashes plain storage.
 /// This is preparation before generating intermediate hashes and calculating Merkle tree root.
@@ -101,16 +105,22 @@ where
                 let chunk = chunk.collect::<Result<Vec<_>, _>>()?;
                 // Spawn the hashing task onto the global rayon pool
                 rayon::spawn(move || {
+                    // Cache hashed address since PlainStorageState is sorted by address
+                    let (mut last_addr, mut hashed_addr) = (Address::ZERO, HASHED_ZERO_ADDRESS);
                     for (address, slot) in chunk {
+                        if address != last_addr {
+                            last_addr = address;
+                            hashed_addr = keccak256(address);
+                        }
                         let mut addr_key = Vec::with_capacity(64);
-                        addr_key.put_slice(keccak256(address).as_slice());
+                        addr_key.put_slice(hashed_addr.as_slice());
                         addr_key.put_slice(keccak256(slot.key).as_slice());
                         let _ = tx.send((addr_key, CompactU256::from(slot.value)));
                     }
                 });
 
                 // Flush to ETL when channels length reaches MAXIMUM_CHANNELS
-                if !channels.is_empty() && channels.len() % MAXIMUM_CHANNELS == 0 {
+                if !channels.is_empty() && channels.len().is_multiple_of(MAXIMUM_CHANNELS) {
                     collect(&mut channels, &mut collector)?;
                 }
             }
@@ -121,7 +131,7 @@ where
             let interval = (total_hashes / 10).max(1);
             let mut cursor = tx.cursor_dup_write::<tables::HashedStorages>()?;
             for (index, item) in collector.iter()?.enumerate() {
-                if index > 0 && index % interval == 0 {
+                if index > 0 && index.is_multiple_of(interval) {
                     info!(
                         target: "sync::stages::hashing_storage",
                         progress = %format!("{:.2}%", (index as f64 / total_hashes as f64) * 100.0),
@@ -266,7 +276,7 @@ mod tests {
                         },
                         ..
                     }) if processed == previous_checkpoint.progress.processed + 1 &&
-                        total == runner.db.table::<tables::PlainStorageState>().unwrap().len() as u64);
+                        total == runner.db.count_entries::<tables::PlainStorageState>().unwrap() as u64);
 
                     // Continue from checkpoint
                     input.checkpoint = Some(checkpoint);
@@ -280,7 +290,7 @@ mod tests {
                         },
                         ..
                     }) if processed == total &&
-                        total == runner.db.table::<tables::PlainStorageState>().unwrap().len() as u64);
+                        total == runner.db.count_entries::<tables::PlainStorageState>().unwrap() as u64);
 
                 // Validate the stage execution
                 assert!(

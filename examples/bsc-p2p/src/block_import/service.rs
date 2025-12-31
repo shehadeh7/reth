@@ -2,7 +2,7 @@ use super::handle::ImportHandle;
 use crate::block_import::parlia::{ParliaConsensus, ParliaConsensusErr};
 use alloy_rpc_types::engine::{ForkchoiceState, PayloadStatusEnum};
 use futures::{future::Either, stream::FuturesUnordered, StreamExt};
-use reth_engine_primitives::{BeaconConsensusEngineHandle, EngineTypes};
+use reth_engine_primitives::{ConsensusEngineHandle, EngineTypes};
 use reth_eth_wire::NewBlock;
 use reth_network::{
     import::{BlockImportError, BlockImportEvent, BlockImportOutcome, BlockValidation},
@@ -52,7 +52,7 @@ where
     T: PayloadTypes,
 {
     /// The handle to communicate with the engine service
-    engine: BeaconConsensusEngineHandle<T>,
+    engine: ConsensusEngineHandle<T>,
     /// The consensus implementation
     consensus: Arc<ParliaConsensus<Provider>>,
     /// Receive the new block from the network
@@ -65,13 +65,13 @@ where
 
 impl<Provider, T> ImportService<Provider, T>
 where
-    Provider: BlockNumReader + Clone + 'static,
+    Provider: BlockNumReader + Sync + Clone + 'static,
     T: PayloadTypes,
 {
     /// Create a new block import service
     pub fn new(
         consensus: Arc<ParliaConsensus<Provider>>,
-        engine: BeaconConsensusEngineHandle<T>,
+        engine: ConsensusEngineHandle<T>,
     ) -> (Self, ImportHandle<T>) {
         let (to_import, from_network) = mpsc::unbounded_channel();
         let (to_network, import_outcome) = mpsc::unbounded_channel();
@@ -198,7 +198,7 @@ where
 
 impl<Provider, T> Future for ImportService<Provider, T>
 where
-    Provider: BlockNumReader + BlockHashReader + Clone + 'static + Unpin,
+    Provider: BlockNumReader + BlockHashReader + Sync + Clone + 'static + Unpin,
     T: PayloadTypes,
 {
     type Output = Result<(), Box<dyn std::error::Error>>;
@@ -357,7 +357,7 @@ mod tests {
         async fn new(responses: EngineResponses) -> Self {
             let consensus = Arc::new(ParliaConsensus::new(MockProvider));
             let (to_engine, from_engine) = mpsc::unbounded_channel();
-            let engine_handle = BeaconConsensusEngineHandle::new(to_engine);
+            let engine_handle = ConsensusEngineHandle::new(to_engine);
 
             handle_engine_msg(from_engine, responses).await;
 

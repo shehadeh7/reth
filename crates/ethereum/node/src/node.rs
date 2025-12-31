@@ -15,7 +15,6 @@ use reth_ethereum_engine_primitives::{
 use reth_ethereum_primitives::{EthPrimitives, TransactionSigned};
 use reth_evm::{
     eth::spec::EthExecutorSpec, ConfigureEvm, EvmFactory, EvmFactoryFor, NextBlockEnvAttributes,
-    TxEnvFor,
 };
 use reth_network::{primitives::BasicNetworkPrimitives, NetworkHandle, PeersInfo};
 use reth_node_api::{
@@ -33,18 +32,22 @@ use reth_node_builder::{
         EngineValidatorBuilder, EthApiBuilder, EthApiCtx, Identity, PayloadValidatorBuilder,
         RethRpcAddOns, RpcAddOns, RpcHandle,
     },
-    BuilderContext, DebugNode, Node, NodeAdapter, PayloadBuilderConfig,
+    BuilderContext, DebugNode, Node, NodeAdapter,
 };
 use reth_payload_primitives::PayloadTypes;
 use reth_provider::{providers::ProviderFactoryBuilder, EthStorage};
 use reth_rpc::{
     eth::core::{EthApiFor, EthRpcConverterFor},
-    ValidationApi,
+    TestingApi, ValidationApi,
 };
-use reth_rpc_api::servers::BlockSubmissionValidationApiServer;
+use reth_rpc_api::servers::{BlockSubmissionValidationApiServer, TestingApiServer};
 use reth_rpc_builder::{config::RethRpcServerConfig, middleware::RethRpcMiddleware};
 use reth_rpc_eth_api::{
-    helpers::pending_block::BuildPendingEnv, RpcConvert, RpcTypes, SignableTxRequest,
+    helpers::{
+        config::{EthConfigApiServer, EthConfigHandler},
+        pending_block::BuildPendingEnv,
+    },
+    RpcConvert, RpcTypes, SignableTxRequest,
 };
 use reth_rpc_eth_types::{error::FromEvmError, EthApiError};
 use reth_rpc_server_types::RethRpcModule;
@@ -53,9 +56,8 @@ use reth_transaction_pool::{
     blobstore::DiskFileBlobStore, EthTransactionPool, PoolPooledTx, PoolTransaction,
     TransactionPool, TransactionValidationTaskExecutor,
 };
-use reth_trie_db::MerklePatriciaTrie;
 use revm::context::TxEnv;
-use std::{default::Default, marker::PhantomData, sync::Arc, time::SystemTime};
+use std::{marker::PhantomData, sync::Arc, time::SystemTime};
 
 /// Type configuration for a regular Ethereum node.
 #[derive(Debug, Default, Clone, Copy)]
@@ -116,13 +118,14 @@ impl EthereumNode {
     /// use reth_chainspec::ChainSpecBuilder;
     /// use reth_db::open_db_read_only;
     /// use reth_node_ethereum::EthereumNode;
-    /// use reth_provider::providers::StaticFileProvider;
+    /// use reth_provider::providers::{RocksDBProvider, StaticFileProvider};
     /// use std::sync::Arc;
     ///
     /// let factory = EthereumNode::provider_factory_builder()
     ///     .db(Arc::new(open_db_read_only("db", Default::default()).unwrap()))
     ///     .chainspec(ChainSpecBuilder::mainnet().build().into())
     ///     .static_file(StaticFileProvider::read_only("db/static_files", false).unwrap())
+    ///     .rocksdb_provider(RocksDBProvider::builder("db/rocksdb").build().unwrap())
     ///     .build_provider_factory();
     /// ```
     pub fn provider_factory_builder() -> ProviderFactoryBuilder<Self> {
@@ -133,7 +136,6 @@ impl EthereumNode {
 impl NodeTypes for EthereumNode {
     type Primitives = EthPrimitives;
     type ChainSpec = ChainSpec;
-    type StateCommitment = MerklePatriciaTrie;
     type Storage = EthStorage;
     type Payload = EthEngineTypes;
 }
@@ -151,15 +153,15 @@ impl<NetworkT> Default for EthereumEthApiBuilder<NetworkT> {
 impl<N, NetworkT> EthApiBuilder<N> for EthereumEthApiBuilder<NetworkT>
 where
     N: FullNodeComponents<
-        Types: NodeTypes<ChainSpec: EthereumHardforks>,
+        Types: NodeTypes<ChainSpec: Hardforks + EthereumHardforks>,
         Evm: ConfigureEvm<NextBlockEnvCtx: BuildPendingEnv<HeaderTy<N::Types>>>,
     >,
     NetworkT: RpcTypes<TransactionRequest: SignableTxRequest<TxTy<N::Types>>>,
     EthRpcConverterFor<N, NetworkT>: RpcConvert<
         Primitives = PrimitivesTy<N::Types>,
-        TxEnv = TxEnvFor<N::Evm>,
         Error = EthApiError,
         Network = NetworkT,
+        Evm = N::Evm,
     >,
     EthApiError: FromEvmError<N::Evm>,
 {
@@ -254,6 +256,14 @@ where
         let Self { inner } = self;
         EthereumAddOns::new(inner.with_rpc_middleware(rpc_middleware))
     }
+
+    /// Sets the tokio runtime for the RPC servers.
+    ///
+    /// Caution: This runtime must not be created from within asynchronous context.
+    pub fn with_tokio_runtime(self, tokio_runtime: Option<tokio::runtime::Handle>) -> Self {
+        let Self { inner } = self;
+        Self { inner: inner.with_tokio_runtime(tokio_runtime) }
+    }
 }
 
 impl<N, EthB, PVB, EB, EVB, RpcMiddleware> NodeAddOns<N>
@@ -261,7 +271,7 @@ impl<N, EthB, PVB, EB, EVB, RpcMiddleware> NodeAddOns<N>
 where
     N: FullNodeComponents<
         Types: NodeTypes<
-            ChainSpec: EthChainSpec + EthereumHardforks,
+            ChainSpec: Hardforks + EthereumHardforks,
             Primitives = EthPrimitives,
             Payload: EngineTypes<ExecutionData = ExecutionData>,
         >,
@@ -290,6 +300,9 @@ where
             Arc::new(EthereumEngineValidator::new(ctx.config.chain.clone())),
         );
 
+        let eth_config =
+            EthConfigHandler::new(ctx.node.provider().clone(), ctx.node.evm_config().clone());
+
         self.inner
             .launch_add_ons_with(ctx, move |container| {
                 container.modules.merge_if_module_configured(
@@ -297,17 +310,33 @@ where
                     validation_api.into_rpc(),
                 )?;
 
+                container
+                    .modules
+                    .merge_if_module_configured(RethRpcModule::Eth, eth_config.into_rpc())?;
+
+                // testing_buildBlockV1: only wire when the hidden testing module is explicitly
+                // requested on any transport. Default stays disabled to honor security guidance.
+                let testing_api = TestingApi::new(
+                    container.registry.eth_api().clone(),
+                    container.registry.evm_config().clone(),
+                )
+                .into_rpc();
+                container
+                    .modules
+                    .merge_if_module_configured(RethRpcModule::Testing, testing_api)?;
+
                 Ok(())
             })
             .await
     }
 }
 
-impl<N, EthB, PVB, EB, EVB> RethRpcAddOns<N> for EthereumAddOns<N, EthB, PVB, EB, EVB>
+impl<N, EthB, PVB, EB, EVB, RpcMiddleware> RethRpcAddOns<N>
+    for EthereumAddOns<N, EthB, PVB, EB, EVB, RpcMiddleware>
 where
     N: FullNodeComponents<
         Types: NodeTypes<
-            ChainSpec: EthChainSpec + EthereumHardforks,
+            ChainSpec: Hardforks + EthereumHardforks,
             Primitives = EthPrimitives,
             Payload: EngineTypes<ExecutionData = ExecutionData>,
         >,
@@ -319,6 +348,7 @@ where
     EVB: EngineValidatorBuilder<N>,
     EthApiError: FromEvmError<N::Evm>,
     EvmFactoryFor<N::Evm>: EvmFactory<Tx = TxEnv>,
+    RpcMiddleware: RethRpcMiddleware,
 {
     type EthApi = EthB::EthApi;
 
@@ -327,7 +357,8 @@ where
     }
 }
 
-impl<N, EthB, PVB, EB, EVB> EngineValidatorAddOn<N> for EthereumAddOns<N, EthB, PVB, EB, EVB>
+impl<N, EthB, PVB, EB, EVB, RpcMiddleware> EngineValidatorAddOn<N>
+    for EthereumAddOns<N, EthB, PVB, EB, EVB, RpcMiddleware>
 where
     N: FullNodeComponents<
         Types: NodeTypes<
@@ -343,6 +374,7 @@ where
     EVB: EngineValidatorBuilder<N>,
     EthApiError: FromEvmError<N::Evm>,
     EvmFactoryFor<N::Evm>: EvmFactory<Tx = TxEnv>,
+    RpcMiddleware: Send,
 {
     type ValidatorBuilder = EVB;
 
@@ -406,9 +438,7 @@ where
     type EVM = EthEvmConfig<Types::ChainSpec>;
 
     async fn build_evm(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::EVM> {
-        let evm_config = EthEvmConfig::new(ctx.chain_spec())
-            .with_extra_data(ctx.payload_builder_config().extra_data_bytes());
-        Ok(evm_config)
+        Ok(EthEvmConfig::new(ctx.chain_spec()))
     }
 }
 
@@ -435,6 +465,9 @@ where
     async fn build_pool(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::Pool> {
         let pool_config = ctx.pool_config();
 
+        let blobs_disabled = ctx.config().txpool.disable_blobs_support ||
+            ctx.config().txpool.blobpool_max_count == 0;
+
         let blob_cache_size = if let Some(blob_cache_size) = pool_config.blob_cache_size {
             Some(blob_cache_size)
         } else {
@@ -457,8 +490,9 @@ where
 
         let validator = TransactionValidationTaskExecutor::eth_builder(ctx.provider().clone())
             .with_head_timestamp(ctx.head().timestamp)
-            .with_max_tx_input_bytes(ctx.config().txpool.max_tx_input_bytes)
+            .set_eip4844(!blobs_disabled)
             .kzg_settings(ctx.kzg_settings()?)
+            .with_max_tx_input_bytes(ctx.config().txpool.max_tx_input_bytes)
             .with_local_transactions_config(pool_config.local_transactions_config.clone())
             .set_tx_fee_cap(ctx.config().rpc.rpc_tx_fee_cap)
             .with_max_tx_gas_limit(ctx.config().txpool.max_tx_gas_limit)

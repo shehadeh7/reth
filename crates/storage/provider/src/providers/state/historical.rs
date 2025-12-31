@@ -1,6 +1,6 @@
 use crate::{
-    providers::state::macros::delegate_provider_impls, AccountReader, BlockHashReader,
-    HashedPostStateProvider, ProviderError, StateProvider, StateRootProvider,
+    AccountReader, BlockHashReader, ChangeSetReader, HashedPostStateProvider, ProviderError,
+    StateProvider, StateRootProvider,
 };
 use alloy_eips::merge::EPOCH_SLOTS;
 use alloy_primitives::{Address, BlockNumber, Bytes, StorageKey, StorageValue, B256};
@@ -14,21 +14,22 @@ use reth_db_api::{
 };
 use reth_primitives_traits::{Account, Bytecode};
 use reth_storage_api::{
-    BlockNumReader, BytecodeReader, DBProvider, StateCommitmentProvider, StateProofProvider,
-    StorageRootProvider,
+    BlockNumReader, BytecodeReader, DBProvider, StateProofProvider, StorageRootProvider,
 };
 use reth_storage_errors::provider::ProviderResult;
 use reth_trie::{
     proof::{Proof, StorageProof},
     updates::TrieUpdates,
     witness::TrieWitness,
-    AccountProof, HashedPostState, HashedStorage, MultiProof, MultiProofTargets, StateRoot,
-    StorageMultiProof, StorageRoot, TrieInput,
+    AccountProof, HashedPostState, HashedPostStateSorted, HashedStorage, KeccakKeyHasher,
+    MultiProof, MultiProofTargets, StateRoot, StorageMultiProof, StorageRoot, TrieInput,
+    TrieInputSorted,
 };
 use reth_trie_db::{
     DatabaseHashedPostState, DatabaseHashedStorage, DatabaseProof, DatabaseStateRoot,
-    DatabaseStorageProof, DatabaseStorageRoot, DatabaseTrieWitness, StateCommitment,
+    DatabaseStorageProof, DatabaseStorageRoot, DatabaseTrieWitness,
 };
+
 use std::fmt::Debug;
 
 /// State provider for a given block number which takes a tx reference.
@@ -60,9 +61,7 @@ pub enum HistoryInfo {
     MaybeInPlainState,
 }
 
-impl<'b, Provider: DBProvider + BlockNumReader + StateCommitmentProvider>
-    HistoricalStateProviderRef<'b, Provider>
-{
+impl<'b, Provider: DBProvider + BlockNumReader> HistoricalStateProviderRef<'b, Provider> {
     /// Create new `StateProvider` for historical block number
     pub fn new(provider: &'b Provider, block_number: BlockNumber) -> Self {
         Self { provider, block_number, lowest_available_blocks: Default::default() }
@@ -120,7 +119,7 @@ impl<'b, Provider: DBProvider + BlockNumReader + StateCommitmentProvider>
     }
 
     /// Retrieve revert hashed state for this history provider.
-    fn revert_state(&self) -> ProviderResult<HashedPostState> {
+    fn revert_state(&self) -> ProviderResult<HashedPostStateSorted> {
         if !self.lowest_available_blocks.is_account_history_available(self.block_number) ||
             !self.lowest_available_blocks.is_storage_history_available(self.block_number)
         {
@@ -135,9 +134,8 @@ impl<'b, Provider: DBProvider + BlockNumReader + StateCommitmentProvider>
             );
         }
 
-        Ok(HashedPostState::from_reverts::<
-            <Provider::StateCommitment as StateCommitment>::KeyHasher,
-        >(self.tx(), self.block_number)?)
+        HashedPostStateSorted::from_reverts::<KeccakKeyHasher>(self.tx(), self.block_number..)
+            .map_err(ProviderError::from)
     }
 
     /// Retrieve revert hashed storage for this history provider and target address.
@@ -245,23 +243,23 @@ impl<Provider: DBProvider + BlockNumReader> HistoricalStateProviderRef<'_, Provi
     }
 }
 
-impl<Provider: DBProvider + BlockNumReader + StateCommitmentProvider> AccountReader
+impl<Provider: DBProvider + BlockNumReader + ChangeSetReader> AccountReader
     for HistoricalStateProviderRef<'_, Provider>
 {
     /// Get basic account information.
     fn basic_account(&self, address: &Address) -> ProviderResult<Option<Account>> {
         match self.account_history_lookup(*address)? {
             HistoryInfo::NotYetWritten => Ok(None),
-            HistoryInfo::InChangeset(changeset_block_number) => Ok(self
-                .tx()
-                .cursor_dup_read::<tables::AccountChangeSets>()?
-                .seek_by_key_subkey(changeset_block_number, *address)?
-                .filter(|acc| &acc.address == address)
-                .ok_or(ProviderError::AccountChangesetNotFound {
-                    block_number: changeset_block_number,
-                    address: *address,
-                })?
-                .info),
+            HistoryInfo::InChangeset(changeset_block_number) => {
+                // Use ChangeSetReader trait method to get the account from changesets
+                self.provider
+                    .get_account_before_block(changeset_block_number, *address)?
+                    .ok_or(ProviderError::AccountChangesetNotFound {
+                        block_number: changeset_block_number,
+                        address: *address,
+                    })
+                    .map(|account_before| account_before.info)
+            }
             HistoryInfo::InPlainState | HistoryInfo::MaybeInPlainState => {
                 Ok(self.tx().get_by_encoded_key::<tables::PlainAccountState>(address)?)
             }
@@ -286,19 +284,20 @@ impl<Provider: DBProvider + BlockNumReader + BlockHashReader> BlockHashReader
     }
 }
 
-impl<Provider: DBProvider + BlockNumReader + StateCommitmentProvider> StateRootProvider
+impl<Provider: DBProvider + BlockNumReader> StateRootProvider
     for HistoricalStateProviderRef<'_, Provider>
 {
     fn state_root(&self, hashed_state: HashedPostState) -> ProviderResult<B256> {
         let mut revert_state = self.revert_state()?;
-        revert_state.extend(hashed_state);
-        StateRoot::overlay_root(self.tx(), revert_state)
+        let hashed_state_sorted = hashed_state.into_sorted();
+        revert_state.extend_ref(&hashed_state_sorted);
+        StateRoot::overlay_root(self.tx(), &revert_state)
             .map_err(|err| ProviderError::Database(err.into()))
     }
 
     fn state_root_from_nodes(&self, mut input: TrieInput) -> ProviderResult<B256> {
-        input.prepend(self.revert_state()?);
-        StateRoot::overlay_root_from_nodes(self.tx(), input)
+        input.prepend(self.revert_state()?.into());
+        StateRoot::overlay_root_from_nodes(self.tx(), TrieInputSorted::from_unsorted(input))
             .map_err(|err| ProviderError::Database(err.into()))
     }
 
@@ -307,8 +306,9 @@ impl<Provider: DBProvider + BlockNumReader + StateCommitmentProvider> StateRootP
         hashed_state: HashedPostState,
     ) -> ProviderResult<(B256, TrieUpdates)> {
         let mut revert_state = self.revert_state()?;
-        revert_state.extend(hashed_state);
-        StateRoot::overlay_root_with_updates(self.tx(), revert_state)
+        let hashed_state_sorted = hashed_state.into_sorted();
+        revert_state.extend_ref(&hashed_state_sorted);
+        StateRoot::overlay_root_with_updates(self.tx(), &revert_state)
             .map_err(|err| ProviderError::Database(err.into()))
     }
 
@@ -316,13 +316,16 @@ impl<Provider: DBProvider + BlockNumReader + StateCommitmentProvider> StateRootP
         &self,
         mut input: TrieInput,
     ) -> ProviderResult<(B256, TrieUpdates)> {
-        input.prepend(self.revert_state()?);
-        StateRoot::overlay_root_from_nodes_with_updates(self.tx(), input)
-            .map_err(|err| ProviderError::Database(err.into()))
+        input.prepend(self.revert_state()?.into());
+        StateRoot::overlay_root_from_nodes_with_updates(
+            self.tx(),
+            TrieInputSorted::from_unsorted(input),
+        )
+        .map_err(|err| ProviderError::Database(err.into()))
     }
 }
 
-impl<Provider: DBProvider + BlockNumReader + StateCommitmentProvider> StorageRootProvider
+impl<Provider: DBProvider + BlockNumReader> StorageRootProvider
     for HistoricalStateProviderRef<'_, Provider>
 {
     fn storage_root(
@@ -361,7 +364,7 @@ impl<Provider: DBProvider + BlockNumReader + StateCommitmentProvider> StorageRoo
     }
 }
 
-impl<Provider: DBProvider + BlockNumReader + StateCommitmentProvider> StateProofProvider
+impl<Provider: DBProvider + BlockNumReader> StateProofProvider
     for HistoricalStateProviderRef<'_, Provider>
 {
     /// Get account and storage proofs.
@@ -371,8 +374,9 @@ impl<Provider: DBProvider + BlockNumReader + StateCommitmentProvider> StateProof
         address: Address,
         slots: &[B256],
     ) -> ProviderResult<AccountProof> {
-        input.prepend(self.revert_state()?);
-        Proof::overlay_account_proof(self.tx(), input, address, slots).map_err(ProviderError::from)
+        input.prepend(self.revert_state()?.into());
+        let proof = <Proof<_, _> as DatabaseProof>::from_tx(self.tx());
+        proof.overlay_account_proof(input, address, slots).map_err(ProviderError::from)
     }
 
     fn multiproof(
@@ -380,30 +384,27 @@ impl<Provider: DBProvider + BlockNumReader + StateCommitmentProvider> StateProof
         mut input: TrieInput,
         targets: MultiProofTargets,
     ) -> ProviderResult<MultiProof> {
-        input.prepend(self.revert_state()?);
-        Proof::overlay_multiproof(self.tx(), input, targets).map_err(ProviderError::from)
+        input.prepend(self.revert_state()?.into());
+        let proof = <Proof<_, _> as DatabaseProof>::from_tx(self.tx());
+        proof.overlay_multiproof(input, targets).map_err(ProviderError::from)
     }
 
     fn witness(&self, mut input: TrieInput, target: HashedPostState) -> ProviderResult<Vec<Bytes>> {
-        input.prepend(self.revert_state()?);
+        input.prepend(self.revert_state()?.into());
         TrieWitness::overlay_witness(self.tx(), input, target)
             .map_err(ProviderError::from)
             .map(|hm| hm.into_values().collect())
     }
 }
 
-impl<Provider: StateCommitmentProvider> HashedPostStateProvider
-    for HistoricalStateProviderRef<'_, Provider>
-{
+impl<Provider> HashedPostStateProvider for HistoricalStateProviderRef<'_, Provider> {
     fn hashed_post_state(&self, bundle_state: &revm_database::BundleState) -> HashedPostState {
-        HashedPostState::from_bundle_state::<
-            <Provider::StateCommitment as StateCommitment>::KeyHasher,
-        >(bundle_state.state())
+        HashedPostState::from_bundle_state::<KeccakKeyHasher>(bundle_state.state())
     }
 }
 
-impl<Provider: DBProvider + BlockNumReader + BlockHashReader + StateCommitmentProvider>
-    StateProvider for HistoricalStateProviderRef<'_, Provider>
+impl<Provider: DBProvider + BlockNumReader + BlockHashReader + ChangeSetReader> StateProvider
+    for HistoricalStateProviderRef<'_, Provider>
 {
     /// Get storage.
     fn storage(
@@ -436,19 +437,13 @@ impl<Provider: DBProvider + BlockNumReader + BlockHashReader + StateCommitmentPr
     }
 }
 
-impl<Provider: DBProvider + BlockNumReader + StateCommitmentProvider> BytecodeReader
+impl<Provider: DBProvider + BlockNumReader> BytecodeReader
     for HistoricalStateProviderRef<'_, Provider>
 {
     /// Get account code by its hash
     fn bytecode_by_hash(&self, code_hash: &B256) -> ProviderResult<Option<Bytecode>> {
         self.tx().get_by_encoded_key::<tables::Bytecodes>(code_hash).map_err(Into::into)
     }
-}
-
-impl<Provider: StateCommitmentProvider> StateCommitmentProvider
-    for HistoricalStateProviderRef<'_, Provider>
-{
-    type StateCommitment = Provider::StateCommitment;
 }
 
 /// State provider for a given block number.
@@ -463,9 +458,7 @@ pub struct HistoricalStateProvider<Provider> {
     lowest_available_blocks: LowestAvailableBlocks,
 }
 
-impl<Provider: DBProvider + BlockNumReader + StateCommitmentProvider>
-    HistoricalStateProvider<Provider>
-{
+impl<Provider: DBProvider + BlockNumReader> HistoricalStateProvider<Provider> {
     /// Create new `StateProvider` for historical block number
     pub fn new(provider: Provider, block_number: BlockNumber) -> Self {
         Self { provider, block_number, lowest_available_blocks: Default::default() }
@@ -500,14 +493,8 @@ impl<Provider: DBProvider + BlockNumReader + StateCommitmentProvider>
     }
 }
 
-impl<Provider: StateCommitmentProvider> StateCommitmentProvider
-    for HistoricalStateProvider<Provider>
-{
-    type StateCommitment = Provider::StateCommitment;
-}
-
 // Delegates all provider impls to [HistoricalStateProviderRef]
-delegate_provider_impls!(HistoricalStateProvider<Provider> where [Provider: DBProvider + BlockNumReader + BlockHashReader + StateCommitmentProvider]);
+reth_storage_api::macros::delegate_provider_impls!(HistoricalStateProvider<Provider> where [Provider: DBProvider + BlockNumReader + BlockHashReader + ChangeSetReader]);
 
 /// Lowest blocks at which different parts of the state are available.
 /// They may be [Some] if pruning is enabled.
@@ -553,8 +540,7 @@ mod tests {
     };
     use reth_primitives_traits::{Account, StorageEntry};
     use reth_storage_api::{
-        BlockHashReader, BlockNumReader, DBProvider, DatabaseProviderFactory,
-        StateCommitmentProvider,
+        BlockHashReader, BlockNumReader, ChangeSetReader, DBProvider, DatabaseProviderFactory,
     };
     use reth_storage_errors::provider::ProviderError;
 
@@ -566,7 +552,7 @@ mod tests {
     const fn assert_state_provider<T: StateProvider>() {}
     #[expect(dead_code)]
     const fn assert_historical_state_provider<
-        T: DBProvider + BlockNumReader + BlockHashReader + StateCommitmentProvider,
+        T: DBProvider + BlockNumReader + BlockHashReader + ChangeSetReader,
     >() {
         assert_state_provider::<HistoricalStateProvider<T>>();
     }

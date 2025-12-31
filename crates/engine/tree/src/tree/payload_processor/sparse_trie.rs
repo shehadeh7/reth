@@ -1,9 +1,6 @@
 //! Sparse Trie task related functionality.
 
-use crate::tree::payload_processor::{
-    executor::WorkloadExecutor,
-    multiproof::{MultiProofTaskMetrics, SparseTrieUpdate},
-};
+use crate::tree::payload_processor::multiproof::{MultiProofTaskMetrics, SparseTrieUpdate};
 use alloy_primitives::B256;
 use rayon::iter::{ParallelBridge, ParallelIterator};
 use reth_trie::{updates::TrieUpdates, Nibbles};
@@ -13,11 +10,12 @@ use reth_trie_sparse::{
     provider::{TrieNodeProvider, TrieNodeProviderFactory},
     ClearedSparseStateTrie, SerialSparseTrie, SparseStateTrie, SparseTrieInterface,
 };
+use smallvec::SmallVec;
 use std::{
     sync::mpsc,
     time::{Duration, Instant},
 };
-use tracing::{debug, trace, trace_span};
+use tracing::{debug, debug_span, instrument, trace};
 
 /// A task responsible for populating the sparse trie.
 pub(super) struct SparseTrieTask<BPF, A = SerialSparseTrie, S = SerialSparseTrie>
@@ -26,9 +24,6 @@ where
     BPF::AccountNodeProvider: TrieNodeProvider + Send + Sync,
     BPF::StorageNodeProvider: TrieNodeProvider + Send + Sync,
 {
-    /// Executor used to spawn subtasks.
-    #[expect(unused)] // TODO use this for spawning trie tasks
-    pub(super) executor: WorkloadExecutor,
     /// Receives updates from the state root task.
     pub(super) updates: mpsc::Receiver<SparseTrieUpdate>,
     /// `SparseStateTrie` used for computing the state root.
@@ -44,23 +39,16 @@ where
     BPF::AccountNodeProvider: TrieNodeProvider + Send + Sync,
     BPF::StorageNodeProvider: TrieNodeProvider + Send + Sync,
     A: SparseTrieInterface + Send + Sync + Default,
-    S: SparseTrieInterface + Send + Sync + Default,
+    S: SparseTrieInterface + Send + Sync + Default + Clone,
 {
     /// Creates a new sparse trie, pre-populating with a [`ClearedSparseStateTrie`].
     pub(super) fn new_with_cleared_trie(
-        executor: WorkloadExecutor,
         updates: mpsc::Receiver<SparseTrieUpdate>,
         blinded_provider_factory: BPF,
         metrics: MultiProofTaskMetrics,
         sparse_state_trie: ClearedSparseStateTrie<A, S>,
     ) -> Self {
-        Self {
-            executor,
-            updates,
-            metrics,
-            trie: sparse_state_trie.into_inner(),
-            blinded_provider_factory,
-        }
+        Self { updates, metrics, trie: sparse_state_trie.into_inner(), blinded_provider_factory }
     }
 
     /// Runs the sparse trie task to completion.
@@ -73,6 +61,11 @@ where
     ///
     /// - State root computation outcome.
     /// - `SparseStateTrie` that needs to be cleared and reused to avoid reallocations.
+    #[instrument(
+        level = "debug",
+        target = "engine::tree::payload_processor::sparse_trie",
+        skip_all
+    )]
     pub(super) fn run(
         mut self,
     ) -> (Result<StateRootComputeOutcome, ParallelStateRootError>, SparseStateTrie<A, S>) {
@@ -92,10 +85,14 @@ where
         while let Ok(mut update) = self.updates.recv() {
             num_iterations += 1;
             let mut num_updates = 1;
+            let _enter =
+                debug_span!(target: "engine::tree::payload_processor::sparse_trie", "drain updates")
+                    .entered();
             while let Ok(next) = self.updates.try_recv() {
                 update.extend(next);
                 num_updates += 1;
             }
+            drop(_enter);
 
             debug!(
                 target: "engine::root",
@@ -142,6 +139,7 @@ pub struct StateRootComputeOutcome {
 }
 
 /// Updates the sparse trie with the given proofs and state, and returns the elapsed time.
+#[instrument(level = "debug", target = "engine::tree::payload_processor::sparse_trie", skip_all)]
 pub(crate) fn update_sparse_trie<BPF, A, S>(
     trie: &mut SparseStateTrie<A, S>,
     SparseTrieUpdate { mut state, multiproof }: SparseTrieUpdate,
@@ -152,7 +150,7 @@ where
     BPF::AccountNodeProvider: TrieNodeProvider + Send + Sync,
     BPF::StorageNodeProvider: TrieNodeProvider + Send + Sync,
     A: SparseTrieInterface + Send + Sync + Default,
-    S: SparseTrieInterface + Send + Sync + Default,
+    S: SparseTrieInterface + Send + Sync + Default + Clone,
 {
     trace!(target: "engine::root::sparse", "Updating sparse trie");
     let started_at = Instant::now();
@@ -167,47 +165,70 @@ where
     );
 
     // Update storage slots with new values and calculate storage roots.
-    let (tx, rx) = mpsc::channel();
-    state
+    let span = tracing::Span::current();
+    let results: Vec<_> = state
         .storages
         .into_iter()
         .map(|(address, storage)| (address, storage, trie.take_storage_trie(&address)))
         .par_bridge()
         .map(|(address, storage, storage_trie)| {
-            let span = trace_span!(target: "engine::root::sparse", "Storage trie", ?address);
-            let _enter = span.enter();
-            trace!(target: "engine::root::sparse", "Updating storage");
+            let _enter =
+                debug_span!(target: "engine::tree::payload_processor::sparse_trie", parent: span.clone(), "storage trie", ?address)
+                    .entered();
+
+            trace!(target: "engine::tree::payload_processor::sparse_trie", "Updating storage");
             let storage_provider = blinded_provider_factory.storage_node_provider(address);
             let mut storage_trie = storage_trie.ok_or(SparseTrieErrorKind::Blind)?;
 
             if storage.wiped {
-                trace!(target: "engine::root::sparse", "Wiping storage");
+                trace!(target: "engine::tree::payload_processor::sparse_trie", "Wiping storage");
                 storage_trie.wipe()?;
             }
+
+            // Defer leaf removals until after updates/additions, so that we don't delete an
+            // intermediate branch node during a removal and then re-add that branch back during a
+            // later leaf addition. This is an optimization, but also a requirement inherited from
+            // multiproof generating, which can't know the order that leaf operations happen in.
+            let mut removed_slots = SmallVec::<[Nibbles; 8]>::new();
+
             for (slot, value) in storage.storage {
                 let slot_nibbles = Nibbles::unpack(slot);
+
                 if value.is_zero() {
-                    trace!(target: "engine::root::sparse", ?slot, "Removing storage slot");
-                    storage_trie.remove_leaf(&slot_nibbles, &storage_provider)?;
-                } else {
-                    trace!(target: "engine::root::sparse", ?slot, "Updating storage slot");
-                    storage_trie.update_leaf(
-                        slot_nibbles,
-                        alloy_rlp::encode_fixed_size(&value).to_vec(),
-                        &storage_provider,
-                    )?;
+                    removed_slots.push(slot_nibbles);
+                    continue;
                 }
+
+                trace!(target: "engine::tree::payload_processor::sparse_trie", ?slot_nibbles, "Updating storage slot");
+                storage_trie.update_leaf(
+                    slot_nibbles,
+                    alloy_rlp::encode_fixed_size(&value).to_vec(),
+                    &storage_provider,
+                )?;
+            }
+
+            for slot_nibbles in removed_slots {
+                trace!(target: "engine::root::sparse", ?slot_nibbles, "Removing storage slot");
+                storage_trie.remove_leaf(&slot_nibbles, &storage_provider)?;
             }
 
             storage_trie.root();
 
             SparseStateTrieResult::Ok((address, storage_trie))
         })
-        .for_each_init(|| tx.clone(), |tx, result| tx.send(result).unwrap());
-    drop(tx);
+        .collect();
+
+    // Defer leaf removals until after updates/additions, so that we don't delete an intermediate
+    // branch node during a removal and then re-add that branch back during a later leaf addition.
+    // This is an optimization, but also a requirement inherited from multiproof generating, which
+    // can't know the order that leaf operations happen in.
+    let mut removed_accounts = Vec::new();
 
     // Update account storage roots
-    for result in rx {
+    let _enter =
+        tracing::debug_span!(target: "engine::tree::payload_processor::sparse_trie", "account trie")
+            .entered();
+    for result in results {
         let (address, storage_trie) = result?;
         trie.insert_storage_trie(address, storage_trie);
 
@@ -215,18 +236,35 @@ where
             // If the account itself has an update, remove it from the state update and update in
             // one go instead of doing it down below.
             trace!(target: "engine::root::sparse", ?address, "Updating account and its storage root");
-            trie.update_account(address, account.unwrap_or_default(), blinded_provider_factory)?;
+            if !trie.update_account(
+                address,
+                account.unwrap_or_default(),
+                blinded_provider_factory,
+            )? {
+                removed_accounts.push(address);
+            }
         } else if trie.is_account_revealed(address) {
             // Otherwise, if the account is revealed, only update its storage root.
             trace!(target: "engine::root::sparse", ?address, "Updating account storage root");
-            trie.update_account_storage_root(address, blinded_provider_factory)?;
+            if !trie.update_account_storage_root(address, blinded_provider_factory)? {
+                removed_accounts.push(address);
+            }
         }
     }
 
     // Update accounts
     for (address, account) in state.accounts {
         trace!(target: "engine::root::sparse", ?address, "Updating account");
-        trie.update_account(address, account.unwrap_or_default(), blinded_provider_factory)?;
+        if !trie.update_account(address, account.unwrap_or_default(), blinded_provider_factory)? {
+            removed_accounts.push(address);
+        }
+    }
+
+    // Remove accounts
+    for address in removed_accounts {
+        trace!(target: "engine::root::sparse", ?address, "Removing account");
+        let nibbles = Nibbles::unpack(address);
+        trie.remove_account_leaf(&nibbles, blinded_provider_factory)?;
     }
 
     let elapsed_before = started_at.elapsed();

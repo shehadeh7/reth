@@ -11,6 +11,7 @@ exclude_crates=(
   # The following require investigation if they can be fixed
   reth-basic-payload-builder
   reth-bench
+  reth-bench-compare
   reth-cli
   reth-cli-commands
   reth-cli-runner
@@ -40,6 +41,7 @@ exclude_crates=(
   reth-node-events
   reth-node-metrics
   reth-optimism-cli
+  reth-optimism-flashblocks
   reth-optimism-node
   reth-optimism-payload-builder
   reth-optimism-rpc
@@ -67,6 +69,7 @@ exclude_crates=(
   reth-payload-builder # reth-metrics
   reth-provider # tokio
   reth-prune # tokio
+  reth-prune-static-files # reth-provider
   reth-stages-api # reth-provider, reth-prune
   reth-static-file # tokio
   reth-transaction-pool # c-kzg

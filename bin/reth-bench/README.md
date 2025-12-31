@@ -80,7 +80,7 @@ RUSTFLAGS="-C target-cpu=native" cargo build --profile profiling --no-default-fe
 ### Run the Benchmark:
 First, start the reth node. Here is an example that runs `reth` compiled with the `profiling` profile, runs `samply`, and configures `reth` to run with metrics enabled:
 ```bash
-samply record -p 3001 target/profiling/reth node --metrics localhost:9001 --authrpc.jwt-secret <jwt_file_path>
+samply record -p 3001 target/profiling/reth node --metrics localhost:9001 --authrpc.jwtsecret <jwt_file_path>
 ```
 
 ```bash
@@ -91,6 +91,18 @@ Replace `<start_block>`, `<end_block>`, and `<jwt_file_path>` with the appropria
 This should NOT be the node that is being used for the benchmark. The node behind `--rpc-url` will be used as a data source for fetching real blocks, so they can be replayed in
 the benchmark. The node being benchmarked will not have these blocks.
 Note that this assumes that the benchmark node's engine API is running on `http://127.0.0.1:8551`, which is set as a default value in `reth-bench`. To configure this value, use the `--engine-rpc-url` flag.
+
+#### Using the `--advance` argument
+
+The `--advance` argument allows you to benchmark a relative number of blocks from the current head, without manually specifying `--from` and `--to`.
+
+```bash
+# Benchmark the next 10 blocks from the current head
+reth-bench new-payload-fcu --advance 10 --jwt-secret <jwt_file_path> --rpc-url <rpc-url>
+
+# Benchmark the next 50 blocks with a different subcommand
+reth-bench new-payload-only --advance 50 --jwt-secret <jwt_file_path> --rpc-url <rpc-url>
+```
 
 ### Observe Outputs
 
@@ -131,5 +143,5 @@ To reproduce the benchmark, first re-set the node to the block that the benchmar
 - **RPC Configuration**: The RPC endpoints should be accessible and configured correctly, specifically the RPC endpoint must support `eth_getBlockByNumber` and support fetching full transactions. The benchmark will make one RPC query per block as fast as possible, so ensure the RPC endpoint does not rate limit or block requests after a certain volume.
 - **Reproducibility**: Ensure that the node is at the same state before attempting to retry a benchmark. The `new-payload-fcu` command specifically will commit to the database, so the node must be rolled back using `reth stage unwind` to reproducibly retry benchmarks.
 - **Profiling tools**: If you are collecting CPU profiles, tools like [`samply`](https://github.com/mstange/samply) and [`perf`](https://perf.wiki.kernel.org/index.php/Main_Page) can be useful for analyzing node performance.
-- **Benchmark Data**: `reth-bench` additionally contains a `--benchmark.output` flag, which will output gas used benchmarks across the benchmark range in CSV format. This may be useful for further data analysis.
+- **Benchmark Data**: `reth-bench` additionally contains a `--output` flag, which will output gas used benchmarks across the benchmark range in CSV format. This may be useful for further data analysis.
 - **Platform Information**: To ensure accurate and reproducible benchmarking, document the platform details, including hardware specifications, OS version, and any other relevant information before publishing any benchmarks.

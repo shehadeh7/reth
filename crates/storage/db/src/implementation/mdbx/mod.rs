@@ -23,6 +23,7 @@ use reth_libmdbx::{
 use reth_storage_errors::db::LogLevel;
 use reth_tracing::tracing::error;
 use std::{
+    collections::HashMap,
     ops::{Deref, Range},
     path::Path,
     sync::Arc,
@@ -102,6 +103,22 @@ pub struct DatabaseArguments {
     /// MDBX allows up to 32767 readers (`MDBX_READERS_LIMIT`). This arg is to configure the max
     /// readers.
     max_readers: Option<u64>,
+    /// Defines the synchronization strategy used by the MDBX database when writing data to disk.
+    ///
+    /// This determines how aggressively MDBX ensures data durability versus prioritizing
+    /// performance. The available modes are:
+    ///
+    /// - [`SyncMode::Durable`]: Ensures all transactions are fully flushed to disk before they are
+    ///   considered committed.   This provides the highest level of durability and crash safety
+    ///   but may have a performance cost.
+    /// - [`SyncMode::SafeNoSync`]: Skips certain fsync operations to improve write performance.
+    ///   This mode still maintains database integrity but may lose the most recent transactions if
+    ///   the system crashes unexpectedly.
+    ///
+    /// Choose `Durable` if consistency and crash safety are critical (e.g., production
+    /// environments). Choose `SafeNoSync` if performance is more important and occasional data
+    /// loss is acceptable (e.g., testing or ephemeral data).
+    sync_mode: SyncMode,
 }
 
 impl Default for DatabaseArguments {
@@ -116,7 +133,7 @@ impl DatabaseArguments {
         Self {
             client_version,
             geometry: Geometry {
-                size: Some(0..(4 * TERABYTE)),
+                size: Some(0..(8 * TERABYTE)),
                 growth_step: Some(4 * GIGABYTE as isize),
                 shrink_threshold: Some(0),
                 page_size: Some(PageSize::Set(default_page_size())),
@@ -125,6 +142,7 @@ impl DatabaseArguments {
             max_read_transaction_duration: None,
             exclusive: None,
             max_readers: None,
+            sync_mode: SyncMode::Durable,
         }
     }
 
@@ -133,6 +151,24 @@ impl DatabaseArguments {
         if let Some(max_size) = max_size {
             self.geometry.size = Some(0..max_size);
         }
+        self
+    }
+
+    /// Sets the database page size value.
+    pub const fn with_geometry_page_size(mut self, page_size: Option<usize>) -> Self {
+        if let Some(size) = page_size {
+            self.geometry.page_size = Some(reth_libmdbx::PageSize::Set(size));
+        }
+
+        self
+    }
+
+    /// Sets the database sync mode.
+    pub const fn with_sync_mode(mut self, sync_mode: Option<SyncMode>) -> Self {
+        if let Some(sync_mode) = sync_mode {
+            self.sync_mode = sync_mode;
+        }
+
         self
     }
 
@@ -190,6 +226,12 @@ impl DatabaseArguments {
 pub struct DatabaseEnv {
     /// Libmdbx-sys environment.
     inner: Environment,
+    /// Opened DBIs for reuse.
+    /// Important: Do not manually close these DBIs, like via `mdbx_dbi_close`.
+    /// More generally, do not dynamically create, re-open, or drop tables at
+    /// runtime. It's better to perform table creation and migration only once
+    /// at startup.
+    dbis: Arc<HashMap<&'static str, ffi::MDBX_dbi>>,
     /// Cache for metric handles. If `None`, metrics are not recorded.
     metrics: Option<Arc<DatabaseEnvMetrics>>,
     /// Write lock for when dealing with a read-write environment.
@@ -201,16 +243,18 @@ impl Database for DatabaseEnv {
     type TXMut = tx::Tx<RW>;
 
     fn tx(&self) -> Result<Self::TX, DatabaseError> {
-        Tx::new_with_metrics(
+        Tx::new(
             self.inner.begin_ro_txn().map_err(|e| DatabaseError::InitTx(e.into()))?,
+            self.dbis.clone(),
             self.metrics.clone(),
         )
         .map_err(|e| DatabaseError::InitTx(e.into()))
     }
 
     fn tx_mut(&self) -> Result<Self::TXMut, DatabaseError> {
-        Tx::new_with_metrics(
+        Tx::new(
             self.inner.begin_rw_txn().map_err(|e| DatabaseError::InitTx(e.into()))?,
+            self.dbis.clone(),
             self.metrics.clone(),
         )
         .map_err(|e| DatabaseError::InitTx(e.into()))
@@ -320,7 +364,7 @@ impl DatabaseEnv {
             DatabaseEnvKind::RW => {
                 // enable writemap mode in RW mode
                 inner_env.write_map();
-                Mode::ReadWrite { sync_mode: SyncMode::Durable }
+                Mode::ReadWrite { sync_mode: args.sync_mode }
             }
         };
 
@@ -445,6 +489,7 @@ impl DatabaseEnv {
 
         let env = Self {
             inner: inner_env.open(path).map_err(|e| DatabaseError::Open(e.into()))?,
+            dbis: Arc::default(),
             metrics: None,
             _lock_file,
         };
@@ -459,25 +504,60 @@ impl DatabaseEnv {
     }
 
     /// Creates all the tables defined in [`Tables`], if necessary.
-    pub fn create_tables(&self) -> Result<(), DatabaseError> {
-        self.create_tables_for::<Tables>()
+    ///
+    /// This keeps tracks of the created table handles and stores them for better efficiency.
+    pub fn create_tables(&mut self) -> Result<(), DatabaseError> {
+        self.create_and_track_tables_for::<Tables>()
     }
 
     /// Creates all the tables defined in the given [`TableSet`], if necessary.
-    pub fn create_tables_for<TS: TableSet>(&self) -> Result<(), DatabaseError> {
+    ///
+    /// This keeps tracks of the created table handles and stores them for better efficiency.
+    pub fn create_and_track_tables_for<TS: TableSet>(&mut self) -> Result<(), DatabaseError> {
+        let handles = self._create_tables::<TS>()?;
+        // Note: This is okay because self has mutable access here and `DatabaseEnv` must be Arc'ed
+        // before it can be shared.
+        let dbis = Arc::make_mut(&mut self.dbis);
+        dbis.extend(handles);
+
+        Ok(())
+    }
+
+    /// Creates all the tables defined in [`Tables`], if necessary.
+    ///
+    /// If this type is unique the created handle for the tables will be updated.
+    ///
+    /// This is recommended to be called during initialization to create and track additional tables
+    /// after the default [`Self::create_tables`] are created.
+    pub fn create_tables_for<TS: TableSet>(self: &mut Arc<Self>) -> Result<(), DatabaseError> {
+        let handles = self._create_tables::<TS>()?;
+        if let Some(db) = Arc::get_mut(self) {
+            // Note: The db is unique and the dbis as well, and they can also be cloned.
+            let dbis = Arc::make_mut(&mut db.dbis);
+            dbis.extend(handles);
+        }
+        Ok(())
+    }
+
+    /// Creates the tables and returns the identifiers of the tables.
+    fn _create_tables<TS: TableSet>(
+        &self,
+    ) -> Result<Vec<(&'static str, ffi::MDBX_dbi)>, DatabaseError> {
+        let mut handles = Vec::new();
         let tx = self.inner.begin_rw_txn().map_err(|e| DatabaseError::InitTx(e.into()))?;
 
         for table in TS::tables() {
             let flags =
                 if table.is_dupsort() { DatabaseFlags::DUP_SORT } else { DatabaseFlags::default() };
 
-            tx.create_db(Some(table.name()), flags)
+            let db = tx
+                .create_db(Some(table.name()), flags)
                 .map_err(|e| DatabaseError::CreateTable(e.into()))?;
+            handles.push((table.name(), db.dbi()));
         }
 
         tx.commit().map_err(|e| DatabaseError::Commit(e.into()))?;
-
-        Ok(())
+        Ok(handles)
     }
 
     /// Records version that accesses the database with write privileges.
@@ -543,8 +623,9 @@ mod tests {
 
     /// Create database for testing with specified path
     fn create_test_db_with_path(kind: DatabaseEnvKind, path: &Path) -> DatabaseEnv {
-        let env = DatabaseEnv::open(path, kind, DatabaseArguments::new(ClientVersion::default()))
-            .expect(ERROR_DB_CREATION);
+        let mut env =
+            DatabaseEnv::open(path, kind, DatabaseArguments::new(ClientVersion::default()))
+                .expect(ERROR_DB_CREATION);
         env.create_tables().expect(ERROR_TABLE_CREATION);
         env
     }

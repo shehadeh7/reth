@@ -50,7 +50,7 @@ pub const MERKLE_STAGE_DEFAULT_INCREMENTAL_THRESHOLD: u64 = 7_000;
 
 /// The merkle hashing stage uses input from
 /// [`AccountHashingStage`][crate::stages::AccountHashingStage] and
-/// [`StorageHashingStage`][crate::stages::AccountHashingStage] to calculate intermediate hashes
+/// [`StorageHashingStage`][crate::stages::StorageHashingStage] to calculate intermediate hashes
 /// and state roots.
 ///
 /// This stage should be run with the above two stages, otherwise it is a no-op.
@@ -196,10 +196,11 @@ where
             .ok_or_else(|| ProviderError::HeaderNotFound(to_block.into()))?;
         let target_block_root = target_block.state_root();
 
-        let mut checkpoint = self.get_execution_checkpoint(provider)?;
         let (trie_root, entities_checkpoint) = if range.is_empty() {
             (target_block_root, input.checkpoint().entities_stage_checkpoint().unwrap_or_default())
         } else if to_block - from_block > threshold || from_block == 1 {
+            let mut checkpoint = self.get_execution_checkpoint(provider)?;
+
             // if there are more blocks than threshold it is faster to rebuild the trie
             let mut entities_checkpoint = if let Some(checkpoint) =
                 checkpoint.as_ref().filter(|c| c.target_block == to_block)
@@ -246,7 +247,7 @@ where
                 })?;
             match progress {
                 StateRootProgress::Progress(state, hashed_entries_walked, updates) => {
-                    provider.write_trie_updates(&updates)?;
+                    provider.write_trie_updates(updates)?;
 
                     let mut checkpoint = MerkleCheckpoint::new(
                         to_block,
@@ -289,7 +290,7 @@ where
                     })
                 }
                 StateRootProgress::Complete(root, hashed_entries_walked, updates) => {
-                    provider.write_trie_updates(&updates)?;
+                    provider.write_trie_updates(updates)?;
 
                     entities_checkpoint.processed += hashed_entries_walked as u64;
 
@@ -316,7 +317,7 @@ where
                         error!(target: "sync::stages::merkle", %e, ?current_block_number, ?to_block, "Incremental state root failed! {INVALID_STATE_ROOT_ERROR_MESSAGE}");
                         StageError::Fatal(Box::new(e))
                     })?;
-                provider.write_trie_updates(&updates)?;
+                provider.write_trie_updates(updates)?;
                 final_root = Some(root);
             }
 
@@ -399,12 +400,21 @@ where
             validate_state_root(block_root, SealedHeader::seal_slow(target), input.unwind_to)?;
 
             // Validation passed, apply unwind changes to the database.
-            provider.write_trie_updates(&updates)?;
+            provider.write_trie_updates(updates)?;
 
-            // TODO(alexey): update entities checkpoint
+            // Update entities checkpoint to reflect the unwind operation
+            // Since we're unwinding, we need to recalculate the total entities at the target block
+            let accounts = tx.entries::<tables::HashedAccounts>()?;
+            let storages = tx.entries::<tables::HashedStorages>()?;
+            let total = (accounts + storages) as u64;
+            entities_checkpoint.total = total;
+            entities_checkpoint.processed = total;
         }
 
-        Ok(UnwindOutput { checkpoint: StageCheckpoint::new(input.unwind_to) })
+        Ok(UnwindOutput {
+            checkpoint: StageCheckpoint::new(input.unwind_to)
+                .with_entities_stage_checkpoint(entities_checkpoint),
+        })
     }
 }
 
@@ -483,8 +493,8 @@ mod tests {
                 done: true
             }) if block_number == previous_stage && processed == total &&
                 total == (
-                    runner.db.table::<tables::HashedAccounts>().unwrap().len() +
-                    runner.db.table::<tables::HashedStorages>().unwrap().len()
+                    runner.db.count_entries::<tables::HashedAccounts>().unwrap() +
+                    runner.db.count_entries::<tables::HashedStorages>().unwrap()
                 ) as u64
         );
 
@@ -523,8 +533,8 @@ mod tests {
                 done: true
             }) if block_number == previous_stage && processed == total &&
                 total == (
-                    runner.db.table::<tables::HashedAccounts>().unwrap().len() +
-                    runner.db.table::<tables::HashedStorages>().unwrap().len()
+                    runner.db.count_entries::<tables::HashedAccounts>().unwrap() +
+                    runner.db.count_entries::<tables::HashedStorages>().unwrap()
                 ) as u64
         );
 
@@ -565,8 +575,8 @@ mod tests {
                 done: true
             }) if block_number == previous_stage && processed == total &&
                 total == (
-                    runner.db.table::<tables::HashedAccounts>().unwrap().len() +
-                    runner.db.table::<tables::HashedStorages>().unwrap().len()
+                    runner.db.count_entries::<tables::HashedAccounts>().unwrap() +
+                    runner.db.count_entries::<tables::HashedStorages>().unwrap()
                 ) as u64
         );
 
@@ -728,7 +738,7 @@ mod tests {
             let hash = last_header.hash_slow();
             writer.prune_headers(1).unwrap();
             writer.commit().unwrap();
-            writer.append_header(&last_header, U256::ZERO, &hash).unwrap();
+            writer.append_header(&last_header, &hash).unwrap();
             writer.commit().unwrap();
 
             Ok(blocks)

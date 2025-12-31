@@ -1,16 +1,22 @@
 //! Logic to export from database era1 block history
 //! and injecting them into era1 files with `Era1Writer`.
 
+use crate::calculate_td_by_number;
 use alloy_consensus::BlockHeader;
 use alloy_primitives::{BlockNumber, B256, U256};
 use eyre::{eyre, Result};
 use reth_era::{
-    e2s_types::IndexEntry,
-    era1_file::Era1Writer,
-    era1_types::{BlockIndex, Era1Id},
-    execution_types::{
-        Accumulator, BlockTuple, CompressedBody, CompressedHeader, CompressedReceipts,
-        TotalDifficulty, MAX_BLOCKS_PER_ERA1,
+    common::file_ops::{EraFileId, StreamWriter},
+    e2s::types::IndexEntry,
+    era1::{
+        file::Era1Writer,
+        types::{
+            execution::{
+                Accumulator, BlockTuple, CompressedBody, CompressedHeader, CompressedReceipts,
+                TotalDifficulty, MAX_BLOCKS_PER_ERA1,
+            },
+            group::{BlockIndex, Era1Id},
+        },
     },
 };
 use reth_fs_util as fs;
@@ -113,9 +119,7 @@ where
 
     let mut total_difficulty = if config.first_block_number > 0 {
         let prev_block_number = config.first_block_number - 1;
-        provider
-            .header_td_by_number(prev_block_number)?
-            .ok_or_else(|| eyre!("Total difficulty not found for block {prev_block_number}"))?
+        calculate_td_by_number(provider, prev_block_number)?
     } else {
         U256::ZERO
     };
@@ -146,14 +150,20 @@ where
         let era1_id = Era1Id::new(&config.network, start_block, block_count as u32)
             .with_hash(historical_root);
 
+        let era1_id = if config.max_blocks_per_file == MAX_BLOCKS_PER_ERA1 as u64 {
+            era1_id
+        } else {
+            era1_id.with_era_count()
+        };
+
         debug!("Final file name {}", era1_id.to_file_name());
         let file_path = config.dir.join(era1_id.to_file_name());
         let file = std::fs::File::create(&file_path)?;
         let mut writer = Era1Writer::new(file);
         writer.write_version()?;
 
-        let mut offsets = Vec::<u64>::with_capacity(block_count);
-        let mut position = VERSION_ENTRY_SIZE as u64;
+        let mut offsets = Vec::<i64>::with_capacity(block_count);
+        let mut position = VERSION_ENTRY_SIZE as i64;
         let mut blocks_written = 0;
         let mut final_header_data = Vec::new();
 
@@ -178,7 +188,7 @@ where
             let body_size = compressed_body.data.len() + ENTRY_HEADER_SIZE;
             let receipts_size = compressed_receipts.data.len() + ENTRY_HEADER_SIZE;
             let difficulty_size = 32 + ENTRY_HEADER_SIZE; // U256 is 32 + 8 bytes header overhead
-            let total_size = (header_size + body_size + receipts_size + difficulty_size) as u64;
+            let total_size = (header_size + body_size + receipts_size + difficulty_size) as i64;
 
             let block_tuple = BlockTuple::new(
                 compressed_header,
@@ -215,12 +225,12 @@ where
             writer.write_accumulator(&accumulator)?;
             writer.write_block_index(&block_index)?;
             writer.flush()?;
-            created_files.push(file_path.clone());
 
             info!(
                 target: "era::history::export",
                 "Wrote ERA1 file: {file_path:?} with {blocks_written} blocks"
             );
+            created_files.push(file_path);
         }
     }
 
@@ -306,7 +316,7 @@ where
 #[cfg(test)]
 mod tests {
     use crate::ExportConfig;
-    use reth_era::execution_types::MAX_BLOCKS_PER_ERA1;
+    use reth_era::era1::types::execution::MAX_BLOCKS_PER_ERA1;
     use tempfile::tempdir;
 
     #[test]

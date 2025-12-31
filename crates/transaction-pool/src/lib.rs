@@ -63,7 +63,7 @@
 //!
 //! ## Validation Process
 //!
-//! ### Stateless Checks  
+//! ### Stateless Checks
 //!
 //! Ethereum transactions undergo several stateless checks:
 //!
@@ -267,13 +267,15 @@
     html_favicon_url = "https://avatars0.githubusercontent.com/u/97369466?s=256",
     issue_tracker_base_url = "https://github.com/paradigmxyz/reth/issues/"
 )]
-#![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
 pub use crate::{
+    batcher::{BatchTxProcessor, BatchTxRequest},
     blobstore::{BlobStore, BlobStoreError},
     config::{
-        LocalTransactionConfig, PoolConfig, PriceBumpConfig, SubPoolLimit, DEFAULT_PRICE_BUMP,
+        LocalTransactionConfig, PoolConfig, PriceBumpConfig, SubPoolLimit,
+        DEFAULT_MAX_INFLIGHT_DELEGATED_SLOTS, DEFAULT_PRICE_BUMP,
         DEFAULT_TXPOOL_ADDITIONAL_VALIDATION_TASKS, MAX_NEW_PENDING_TXS_NOTIFICATIONS,
         REPLACE_BLOB_PRICE_BUMP, TXPOOL_MAX_ACCOUNT_SLOTS_PER_SENDER,
         TXPOOL_SUBPOOL_MAX_SIZE_MB_DEFAULT, TXPOOL_SUBPOOL_MAX_TXS_DEFAULT,
@@ -314,6 +316,7 @@ pub mod noop;
 pub mod pool;
 pub mod validate;
 
+pub mod batcher;
 pub mod blobstore;
 mod config;
 pub mod identifier;
@@ -351,8 +354,8 @@ where
         Self { pool: Arc::new(PoolInner::new(validator, ordering, blob_store, config)) }
     }
 
-    /// Returns the wrapped pool.
-    pub(crate) fn inner(&self) -> &PoolInner<V, T, S> {
+    /// Returns the wrapped pool internals.
+    pub fn inner(&self) -> &PoolInner<V, T, S> {
         &self.pool
     }
 
@@ -361,17 +364,18 @@ where
         self.inner().config()
     }
 
+    /// Get the validator reference.
+    pub fn validator(&self) -> &V {
+        self.inner().validator()
+    }
+
     /// Validates the given transaction
     async fn validate(
         &self,
         origin: TransactionOrigin,
         transaction: V::Transaction,
-    ) -> (TxHash, TransactionValidationOutcome<V::Transaction>) {
-        let hash = *transaction.hash();
-
-        let outcome = self.pool.validator().validate_transaction(origin, transaction).await;
-
-        (hash, outcome)
+    ) -> TransactionValidationOutcome<V::Transaction> {
+        self.pool.validator().validate_transaction(origin, transaction).await
     }
 
     /// Returns future that validates all transactions in the given iterator.
@@ -381,26 +385,8 @@ where
         &self,
         origin: TransactionOrigin,
         transactions: impl IntoIterator<Item = V::Transaction> + Send,
-    ) -> Vec<(TxHash, TransactionValidationOutcome<V::Transaction>)> {
-        self.pool
-            .validator()
-            .validate_transactions_with_origin(origin, transactions)
-            .await
-            .into_iter()
-            .map(|tx| (tx.tx_hash(), tx))
-            .collect()
-    }
-
-    /// Validates all transactions with their individual origins.
-    ///
-    /// This returns the validated transactions in the same order as input.
-    async fn validate_all_with_origins(
-        &self,
-        transactions: Vec<(TransactionOrigin, V::Transaction)>,
-    ) -> Vec<(TransactionOrigin, TransactionValidationOutcome<V::Transaction>)> {
-        let origins: Vec<_> = transactions.iter().map(|(origin, _)| *origin).collect();
-        let tx_outcomes = self.pool.validator().validate_transactions(transactions).await;
-        origins.into_iter().zip(tx_outcomes).collect()
+    ) -> Vec<TransactionValidationOutcome<V::Transaction>> {
+        self.pool.validator().validate_transactions_with_origin(origin, transactions).await
     }
 
     /// Number of transactions in the entire pool
@@ -491,7 +477,7 @@ where
         origin: TransactionOrigin,
         transaction: Self::Transaction,
     ) -> PoolResult<TransactionEvents> {
-        let (_, tx) = self.validate(origin, transaction).await;
+        let tx = self.validate(origin, transaction).await;
         self.pool.add_transaction_and_subscribe(origin, tx)
     }
 
@@ -500,7 +486,7 @@ where
         origin: TransactionOrigin,
         transaction: Self::Transaction,
     ) -> PoolResult<AddedTransactionOutcome> {
-        let (_, tx) = self.validate(origin, transaction).await;
+        let tx = self.validate(origin, transaction).await;
         let mut results = self.pool.add_transactions(origin, std::iter::once(tx));
         results.pop().expect("result length is the same as the input")
     }
@@ -515,19 +501,7 @@ where
         }
         let validated = self.validate_all(origin, transactions).await;
 
-        self.pool.add_transactions(origin, validated.into_iter().map(|(_, tx)| tx))
-    }
-
-    async fn add_transactions_with_origins(
-        &self,
-        transactions: Vec<(TransactionOrigin, Self::Transaction)>,
-    ) -> Vec<PoolResult<AddedTransactionOutcome>> {
-        if transactions.is_empty() {
-            return Vec::new()
-        }
-        let validated = self.validate_all_with_origins(transactions).await;
-
-        self.pool.add_transactions_with_origins(validated)
+        self.pool.add_transactions(origin, validated.into_iter())
     }
 
     fn transaction_event_listener(&self, tx_hash: TxHash) -> Option<TransactionEvents> {
@@ -558,7 +532,7 @@ where
     }
 
     fn pooled_transaction_hashes_max(&self, max: usize) -> Vec<TxHash> {
-        self.pooled_transaction_hashes().into_iter().take(max).collect()
+        self.pool.pooled_transactions_hashes_max(max)
     }
 
     fn pooled_transactions(&self) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
@@ -578,6 +552,15 @@ where
         limit: GetPooledTransactionLimit,
     ) -> Vec<<<V as TransactionValidator>::Transaction as PoolTransaction>::Pooled> {
         self.pool.get_pooled_transaction_elements(tx_hashes, limit)
+    }
+
+    fn append_pooled_transaction_elements(
+        &self,
+        tx_hashes: &[TxHash],
+        limit: GetPooledTransactionLimit,
+        out: &mut Vec<<<V as TransactionValidator>::Transaction as PoolTransaction>::Pooled>,
+    ) {
+        self.pool.append_pooled_transaction_elements(tx_hashes, limit, out)
     }
 
     fn get_pooled_transaction_element(
@@ -776,6 +759,13 @@ where
         versioned_hashes: &[B256],
     ) -> Result<Option<Vec<BlobAndProofV2>>, BlobStoreError> {
         self.pool.blob_store().get_by_versioned_hashes_v2(versioned_hashes)
+    }
+
+    fn get_blobs_for_versioned_hashes_v3(
+        &self,
+        versioned_hashes: &[B256],
+    ) -> Result<Vec<Option<BlobAndProofV2>>, BlobStoreError> {
+        self.pool.blob_store().get_by_versioned_hashes_v3(versioned_hashes)
     }
 }
 

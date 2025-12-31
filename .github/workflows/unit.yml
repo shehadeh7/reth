@@ -11,6 +11,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   SEED: rustethereumethereumrust
+  RUSTC_WRAPPER: "sccache"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
@@ -19,8 +20,7 @@ concurrency:
 jobs:
   test:
     name: test / ${{ matrix.type }} (${{ matrix.partition }}/${{ matrix.total_partitions }})
-    runs-on:
-      group: Reth
+    runs-on: depot-ubuntu-latest-4
     env:
       RUST_BACKTRACE: 1
     strategy:
@@ -44,9 +44,10 @@ jobs:
             total_partitions: 2
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - uses: rui314/setup-mold@v1
       - uses: dtolnay/rust-toolchain@stable
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
@@ -65,25 +66,34 @@ jobs:
 
   state:
     name: Ethereum state tests
-    runs-on:
-      group: Reth
+    runs-on: depot-ubuntu-latest-4
     env:
       RUST_LOG: info,sync=error
       RUST_BACKTRACE: 1
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - name: Checkout ethereum/tests
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           repository: ethereum/tests
           ref: 81862e4848585a438d64f911a19b3825f0f4cd95
           path: testing/ef-tests/ethereum-tests
           submodules: recursive
           fetch-depth: 1
+      - name: Download & extract EEST fixtures (public)
+        shell: bash
+        env:
+          EEST_TESTS_TAG: v4.5.0
+        run: |
+          set -euo pipefail
+          mkdir -p testing/ef-tests/execution-spec-tests
+          URL="https://github.com/ethereum/execution-spec-tests/releases/download/${EEST_TESTS_TAG}/fixtures_stable.tar.gz"
+          curl -L "$URL" | tar -xz --strip-components=1 -C testing/ef-tests/execution-spec-tests
       - uses: rui314/setup-mold@v1
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@nextest
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
@@ -91,15 +101,15 @@ jobs:
 
   doc:
     name: doc tests
-    runs-on:
-      group: Reth
+    runs-on: depot-ubuntu-latest
     env:
       RUST_BACKTRACE: 1
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - uses: rui314/setup-mold@v1
       - uses: dtolnay/rust-toolchain@stable
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true

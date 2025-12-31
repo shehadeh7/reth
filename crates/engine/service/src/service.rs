@@ -2,7 +2,7 @@ use futures::{Stream, StreamExt};
 use pin_project::pin_project;
 use reth_chainspec::EthChainSpec;
 use reth_consensus::{ConsensusError, FullConsensus};
-use reth_engine_primitives::{BeaconConsensusEngineEvent, BeaconEngineMessage};
+use reth_engine_primitives::{BeaconEngineMessage, ConsensusEngineEvent};
 use reth_engine_tree::{
     backfill::PipelineSync,
     download::BasicBlockDownloader,
@@ -130,18 +130,13 @@ where
     N: ProviderNodeTypes,
     Client: BlockClient<Block = BlockTy<N>> + 'static,
 {
-    type Item = ChainEvent<BeaconConsensusEngineEvent<N::Primitives>>;
+    type Item = ChainEvent<ConsensusEngineEvent<N::Primitives>>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut orchestrator = self.project().orchestrator;
         StreamExt::poll_next_unpin(&mut orchestrator, cx)
     }
 }
-
-/// Potential error returned by `EngineService`.
-#[derive(Debug, thiserror::Error)]
-#[error("Engine service error.")]
-pub struct EngineServiceError {}
 
 #[cfg(test)]
 mod tests {

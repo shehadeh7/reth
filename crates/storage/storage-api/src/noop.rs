@@ -6,16 +6,16 @@ use crate::{
     HashedPostStateProvider, HeaderProvider, NodePrimitivesProvider, PruneCheckpointReader,
     ReceiptProvider, ReceiptProviderIdExt, StageCheckpointReader, StateProofProvider,
     StateProvider, StateProviderBox, StateProviderFactory, StateReader, StateRootProvider,
-    StorageRootProvider, TransactionVariant, TransactionsProvider,
+    StorageRootProvider, TransactionVariant, TransactionsProvider, TrieReader,
 };
 
 #[cfg(feature = "db-api")]
-use crate::{DBProvider, DatabaseProviderFactory, StateCommitmentProvider};
+use crate::{DBProvider, DatabaseProviderFactory};
 use alloc::{boxed::Box, string::String, sync::Arc, vec::Vec};
 use alloy_consensus::transaction::TransactionMeta;
 use alloy_eips::{BlockHashOrNumber, BlockId, BlockNumberOrTag};
 use alloy_primitives::{
-    Address, BlockHash, BlockNumber, Bytes, StorageKey, StorageValue, TxHash, TxNumber, B256, U256,
+    Address, BlockHash, BlockNumber, Bytes, StorageKey, StorageValue, TxHash, TxNumber, B256,
 };
 use core::{
     fmt::Debug,
@@ -35,11 +35,10 @@ use reth_prune_types::{PruneCheckpoint, PruneSegment};
 use reth_stages_types::{StageCheckpoint, StageId};
 use reth_storage_errors::provider::{ProviderError, ProviderResult};
 use reth_trie_common::{
-    updates::TrieUpdates, AccountProof, HashedPostState, HashedStorage, MultiProof,
-    MultiProofTargets, StorageMultiProof, StorageProof, TrieInput,
+    updates::{TrieUpdates, TrieUpdatesSorted},
+    AccountProof, HashedPostState, HashedStorage, MultiProof, MultiProofTargets, StorageMultiProof,
+    StorageProof, TrieInput,
 };
-#[cfg(feature = "db-api")]
-use reth_trie_db::MerklePatriciaTrie;
 
 /// Supports various api interfaces for testing purposes.
 #[derive(Debug)]
@@ -61,7 +60,7 @@ impl<ChainSpec, N> NoopProvider<ChainSpec, N> {
             #[cfg(feature = "db-api")]
             tx: TxMock::default(),
             #[cfg(feature = "db-api")]
-            prune_modes: PruneModes::none(),
+            prune_modes: PruneModes::default(),
             _phantom: Default::default(),
         }
     }
@@ -75,7 +74,7 @@ impl<ChainSpec> NoopProvider<ChainSpec> {
             #[cfg(feature = "db-api")]
             tx: TxMock::default(),
             #[cfg(feature = "db-api")]
-            prune_modes: PruneModes::none(),
+            prune_modes: PruneModes::default(),
             _phantom: Default::default(),
         }
     }
@@ -239,6 +238,10 @@ impl<C: Send + Sync, N: NodePrimitives> BlockReader for NoopProvider<C, N> {
     ) -> ProviderResult<Vec<RecoveredBlock<Self::Block>>> {
         Ok(Vec::new())
     }
+
+    fn block_by_transaction_id(&self, _id: TxNumber) -> ProviderResult<Option<BlockNumber>> {
+        Ok(None)
+    }
 }
 
 impl<C: Send + Sync, N: NodePrimitives> TransactionsProvider for NoopProvider<C, N> {
@@ -268,10 +271,6 @@ impl<C: Send + Sync, N: NodePrimitives> TransactionsProvider for NoopProvider<C,
         _hash: TxHash,
     ) -> ProviderResult<Option<(Self::Transaction, TransactionMeta)>> {
         Ok(None)
-    }
-
-    fn transaction_block(&self, _id: TxNumber) -> ProviderResult<Option<BlockNumber>> {
-        todo!()
     }
 
     fn transactions_by_block(
@@ -345,19 +344,11 @@ impl<C: Send + Sync, N: NodePrimitives> ReceiptProviderIdExt for NoopProvider<C,
 impl<C: Send + Sync, N: NodePrimitives> HeaderProvider for NoopProvider<C, N> {
     type Header = N::BlockHeader;
 
-    fn header(&self, _block_hash: &BlockHash) -> ProviderResult<Option<Self::Header>> {
+    fn header(&self, _block_hash: BlockHash) -> ProviderResult<Option<Self::Header>> {
         Ok(None)
     }
 
     fn header_by_number(&self, _num: u64) -> ProviderResult<Option<Self::Header>> {
-        Ok(None)
-    }
-
-    fn header_td(&self, _hash: &BlockHash) -> ProviderResult<Option<U256>> {
-        Ok(None)
-    }
-
-    fn header_td_by_number(&self, _number: BlockNumber) -> ProviderResult<Option<U256>> {
         Ok(None)
     }
 
@@ -396,6 +387,14 @@ impl<C: Send + Sync, N: NodePrimitives> ChangeSetReader for NoopProvider<C, N> {
         _block_number: BlockNumber,
     ) -> ProviderResult<Vec<AccountBeforeTx>> {
         Ok(Vec::default())
+    }
+
+    fn get_account_before_block(
+        &self,
+        _block_number: BlockNumber,
+        _address: Address,
+    ) -> ProviderResult<Option<AccountBeforeTx>> {
+        Ok(None)
     }
 }
 
@@ -559,6 +558,10 @@ impl<C: Send + Sync + 'static, N: NodePrimitives> StateProviderFactory for NoopP
     fn pending_state_by_hash(&self, _block_hash: B256) -> ProviderResult<Option<StateProviderBox>> {
         Ok(Some(Box::new(self.clone())))
     }
+
+    fn maybe_pending(&self) -> ProviderResult<Option<StateProviderBox>> {
+        Ok(Some(Box::new(self.clone())))
+    }
 }
 
 impl<C: Send + Sync, N: NodePrimitives> StageCheckpointReader for NoopProvider<C, N> {
@@ -624,13 +627,25 @@ impl<ChainSpec: Send + Sync, N: NodePrimitives> DBProvider for NoopProvider<Chai
     fn prune_modes_ref(&self) -> &PruneModes {
         &self.prune_modes
     }
+
+    fn commit(self) -> ProviderResult<bool> {
+        use reth_db_api::transaction::DbTx;
+
+        Ok(self.tx.commit()?)
+    }
 }
 
-#[cfg(feature = "db-api")]
-impl<ChainSpec: Send + Sync, N: NodePrimitives> StateCommitmentProvider
-    for NoopProvider<ChainSpec, N>
-{
-    type StateCommitment = MerklePatriciaTrie;
+impl<C: Send + Sync, N: NodePrimitives> TrieReader for NoopProvider<C, N> {
+    fn trie_reverts(&self, _from: BlockNumber) -> ProviderResult<TrieUpdatesSorted> {
+        Ok(TrieUpdatesSorted::default())
+    }
+
+    fn get_block_trie_updates(
+        &self,
+        _block_number: BlockNumber,
+    ) -> ProviderResult<TrieUpdatesSorted> {
+        Ok(TrieUpdatesSorted::default())
+    }
 }
 
 #[cfg(feature = "db-api")]

@@ -22,7 +22,7 @@ where
         }
     }
 
-    /// Return the reference to the response header
+    /// Return the difficulty of the response header
     pub fn difficulty(&self) -> U256 {
         match self {
             Self::Full(block) => block.difficulty(),
@@ -34,6 +34,14 @@ where
     pub fn into_body(self) -> Option<B::Body> {
         match self {
             Self::Full(block) => Some(block.into_body()),
+            Self::Empty(_) => None,
+        }
+    }
+
+    /// Return the reference to the response body
+    pub const fn body(&self) -> Option<&B::Body> {
+        match self {
+            Self::Full(block) => Some(block.body()),
             Self::Empty(_) => None,
         }
     }

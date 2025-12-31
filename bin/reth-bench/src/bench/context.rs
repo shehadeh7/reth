@@ -7,6 +7,7 @@ use alloy_primitives::address;
 use alloy_provider::{network::AnyNetwork, Provider, RootProvider};
 use alloy_rpc_client::ClientBuilder;
 use alloy_rpc_types_engine::JwtSecret;
+use alloy_transport::layers::RetryBackoffLayer;
 use reqwest::Url;
 use reth_node_core::args::BenchmarkArgs;
 use tracing::info;
@@ -49,7 +50,9 @@ impl BenchContext {
         }
 
         // set up alloy client for blocks
-        let client = ClientBuilder::default().http(rpc_url.parse()?);
+        let client = ClientBuilder::default()
+            .layer(RetryBackoffLayer::new(10, 800, u64::MAX))
+            .http(rpc_url.parse()?);
         let block_provider = RootProvider::<AnyNetwork>::new(client);
 
         // Check if this is an OP chain by checking code at a predeploy address.
@@ -57,10 +60,6 @@ impl BenchContext {
             .get_code_at(address!("0x420000000000000000000000000000000000000F"))
             .await?
             .is_empty();
-
-        // If neither `--from` nor `--to` are provided, we will run the benchmark continuously,
-        // starting at the latest block.
-        let mut benchmark_mode = BenchMode::new(bench_args.from, bench_args.to)?;
 
         // construct the authenticated provider
         let auth_jwt = bench_args
@@ -82,6 +81,31 @@ impl BenchContext {
         let auth_transport = AuthenticatedTransportConnect::new(auth_url, jwt);
         let client = ClientBuilder::default().connect_with(auth_transport).await?;
         let auth_provider = RootProvider::<AnyNetwork>::new(client);
+
+        // Computes the block range for the benchmark.
+        //
+        // - If `--advance` is provided, fetches the latest block and sets:
+        //     - `from = head + 1`
+        //     - `to = head + advance`
+        // - Otherwise, uses the values from `--from` and `--to`.
+        let (from, to) = if let Some(advance) = bench_args.advance {
+            if advance == 0 {
+                return Err(eyre::eyre!("--advance must be greater than 0"));
+            }
+
+            let head_block = auth_provider
+                .get_block_by_number(BlockNumberOrTag::Latest)
+                .await?
+                .ok_or_else(|| eyre::eyre!("Failed to fetch latest block for --advance"))?;
+            let head_number = head_block.header.number;
+            (Some(head_number), Some(head_number + advance))
+        } else {
+            (bench_args.from, bench_args.to)
+        };
+
+        // If neither `--from` nor `--to` are provided, we will run the benchmark continuously,
+        // starting at the latest block.
+        let mut benchmark_mode = BenchMode::new(from, to)?;
 
         let first_block = match benchmark_mode {
             BenchMode::Continuous => {

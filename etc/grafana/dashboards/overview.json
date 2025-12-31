@@ -2,7 +2,7 @@
   "__inputs": [
     {
       "name": "DS_PROMETHEUS",
-      "label": "prometheus",
+      "label": "Prometheus",
       "description": "",
       "type": "datasource",
       "pluginId": "prometheus",
@@ -46,7 +46,7 @@
       "type": "grafana",
       "id": "grafana",
       "name": "Grafana",
-      "version": "12.1.0-pre"
+      "version": "12.2.1"
     },
     {
       "type": "panel",
@@ -110,7 +110,6 @@
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
-  "id": null,
   "links": [],
   "panels": [
     {
@@ -164,9 +163,7 @@
         "orientation": "auto",
         "percentChangeColorMode": "standard",
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+          "calcs": ["lastNotNull"],
           "fields": "",
           "values": false
         },
@@ -177,12 +174,12 @@
         "textMode": "name",
         "wideLayout": true
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "builder",
           "exemplar": false,
@@ -234,9 +231,7 @@
         "orientation": "auto",
         "percentChangeColorMode": "standard",
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+          "calcs": ["lastNotNull"],
           "fields": "",
           "values": false
         },
@@ -247,12 +242,12 @@
         "textMode": "name",
         "wideLayout": true
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "builder",
           "exemplar": false,
@@ -304,9 +299,7 @@
         "orientation": "auto",
         "percentChangeColorMode": "standard",
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+          "calcs": ["lastNotNull"],
           "fields": "",
           "values": false
         },
@@ -317,12 +310,12 @@
         "textMode": "name",
         "wideLayout": true
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "builder",
           "exemplar": false,
@@ -374,9 +367,7 @@
         "orientation": "auto",
         "percentChangeColorMode": "standard",
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+          "calcs": ["lastNotNull"],
           "fields": "",
           "values": false
         },
@@ -387,12 +378,12 @@
         "textMode": "name",
         "wideLayout": true
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "builder",
           "exemplar": false,
@@ -444,9 +435,7 @@
         "orientation": "auto",
         "percentChangeColorMode": "standard",
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+          "calcs": ["lastNotNull"],
           "fields": "",
           "values": false
         },
@@ -457,12 +446,12 @@
         "textMode": "name",
         "wideLayout": true
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "builder",
           "exemplar": false,
@@ -514,9 +503,7 @@
         "orientation": "auto",
         "percentChangeColorMode": "standard",
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+          "calcs": ["lastNotNull"],
           "fields": "",
           "values": false
         },
@@ -527,12 +514,12 @@
         "textMode": "name",
         "wideLayout": true
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "builder",
           "exemplar": false,
@@ -596,9 +583,7 @@
         "minVizWidth": 75,
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+          "calcs": ["lastNotNull"],
           "fields": "",
           "values": false
         },
@@ -606,12 +591,12 @@
         "showThresholdMarkers": true,
         "sizing": "auto"
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "builder",
           "exemplar": false,
@@ -672,9 +657,7 @@
         "namePlacement": "auto",
         "orientation": "horizontal",
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+          "calcs": ["lastNotNull"],
           "fields": "",
           "values": false
         },
@@ -682,16 +665,16 @@
         "sizing": "auto",
         "valueMode": "color"
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "builder",
           "exemplar": false,
-          "expr": "reth_sync_checkpoint{$instance_label=\"$instance\"}",
+          "expr": "max by (stage) (reth_sync_checkpoint{$instance_label=\"$instance\"})",
           "instant": true,
           "legendFormat": "{{stage}}",
           "range": false,
@@ -774,9 +757,7 @@
         "orientation": "auto",
         "percentChangeColorMode": "standard",
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+          "calcs": ["lastNotNull"],
           "fields": "",
           "values": false
         },
@@ -784,12 +765,12 @@
         "textMode": "auto",
         "wideLayout": true
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "code",
           "expr": "sum(reth_db_table_size{$instance_label=\"$instance\"})",
@@ -813,7 +794,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "code",
           "expr": "sum(reth_static_files_segment_size{$instance_label=\"$instance\"})",
@@ -844,7 +825,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "fieldConfig": {
         "defaults": {
@@ -875,6 +856,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": true,
             "stacking": {
               "group": "A",
@@ -920,7 +902,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
@@ -928,7 +910,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "builder",
-          "expr": "reth_sync_entities_processed{$instance_label=\"$instance\"} / reth_sync_entities_total{$instance_label=\"$instance\"}",
+          "expr": "avg by (stage) (reth_sync_entities_processed{$instance_label=\"$instance\"} / reth_sync_entities_total{$instance_label=\"$instance\"})",
           "legendFormat": "{{stage}}",
           "range": true,
           "refId": "A"
@@ -940,7 +922,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "fieldConfig": {
         "defaults": {
@@ -971,6 +953,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -1017,7 +1000,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
@@ -1025,7 +1008,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "builder",
-          "expr": "reth_sync_checkpoint{$instance_label=\"$instance\"}",
+          "expr": "max by (stage) (reth_sync_checkpoint{$instance_label=\"$instance\"})",
           "legendFormat": "{{stage}}",
           "range": true,
           "refId": "A"
@@ -1037,7 +1020,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "Latency histogram for the engine_forkchoiceUpdated RPC API",
       "fieldConfig": {
@@ -1069,6 +1052,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -1137,7 +1121,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
@@ -1145,171 +1129,12 @@
             "uid": "${datasource}"
           },
           "disableTextWrap": false,
-          "editorMode": "builder",
-          "expr": "reth_engine_rpc_fork_choice_updated_v1{$instance_label=\"$instance\", quantile=\"0\"}",
-          "fullMetaSearch": false,
-          "includeNullMetadata": true,
-          "legendFormat": "engine_forkchoiceUpdatedV1 min",
-          "range": true,
-          "refId": "A",
-          "useBackend": false
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "disableTextWrap": false,
-          "editorMode": "builder",
-          "expr": "reth_engine_rpc_fork_choice_updated_v1{$instance_label=\"$instance\", quantile=\"0.5\"}",
+          "editorMode": "code",
+          "expr": "reth_consensus_engine_beacon_forkchoice_updated_latency{$instance_label=\"$instance\", quantile=\"0\"}",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": true,
-          "legendFormat": "engine_forkchoiceUpdatedV1 p50",
-          "range": true,
-          "refId": "B",
-          "useBackend": false
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "disableTextWrap": false,
-          "editorMode": "builder",
-          "expr": "reth_engine_rpc_fork_choice_updated_v1{$instance_label=\"$instance\", quantile=\"0.9\"}",
-          "fullMetaSearch": false,
-          "hide": false,
-          "includeNullMetadata": true,
-          "legendFormat": "engine_forkchoiceUpdatedV1 p90",
-          "range": true,
-          "refId": "C",
-          "useBackend": false
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "disableTextWrap": false,
-          "editorMode": "builder",
-          "expr": "reth_engine_rpc_fork_choice_updated_v1{$instance_label=\"$instance\", quantile=\"0.95\"}",
-          "fullMetaSearch": false,
-          "hide": false,
-          "includeNullMetadata": true,
-          "legendFormat": "engine_forkchoiceUpdatedV1 p95",
-          "range": true,
-          "refId": "D",
-          "useBackend": false
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "disableTextWrap": false,
-          "editorMode": "builder",
-          "expr": "reth_engine_rpc_fork_choice_updated_v1{$instance_label=\"$instance\", quantile=\"0.99\"}",
-          "fullMetaSearch": false,
-          "hide": false,
-          "includeNullMetadata": true,
-          "legendFormat": "engine_forkchoiceUpdatedV1 p99",
-          "range": true,
-          "refId": "E",
-          "useBackend": false
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "disableTextWrap": false,
-          "editorMode": "builder",
-          "expr": "reth_engine_rpc_fork_choice_updated_v2{$instance_label=\"$instance\", quantile=\"0\"}",
-          "fullMetaSearch": false,
-          "hide": false,
-          "includeNullMetadata": true,
-          "legendFormat": "engine_forkchoiceUpdatedV2 min",
-          "range": true,
-          "refId": "F",
-          "useBackend": false
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "disableTextWrap": false,
-          "editorMode": "builder",
-          "expr": "reth_engine_rpc_fork_choice_updated_v2{$instance_label=\"$instance\", quantile=\"0.5\"}",
-          "fullMetaSearch": false,
-          "hide": false,
-          "includeNullMetadata": true,
-          "legendFormat": "engine_forkchoiceUpdatedV2 p50",
-          "range": true,
-          "refId": "G",
-          "useBackend": false
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "disableTextWrap": false,
-          "editorMode": "builder",
-          "expr": "reth_engine_rpc_fork_choice_updated_v2{$instance_label=\"$instance\", quantile=\"0.9\"}",
-          "fullMetaSearch": false,
-          "hide": false,
-          "includeNullMetadata": true,
-          "legendFormat": "engine_forkchoiceUpdatedV2 p90",
-          "range": true,
-          "refId": "H",
-          "useBackend": false
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "disableTextWrap": false,
-          "editorMode": "builder",
-          "expr": "reth_engine_rpc_fork_choice_updated_v2{$instance_label=\"$instance\", quantile=\"0.95\"}",
-          "fullMetaSearch": false,
-          "hide": false,
-          "includeNullMetadata": true,
-          "legendFormat": "engine_forkchoiceUpdatedV2 p95",
-          "range": true,
-          "refId": "I",
-          "useBackend": false
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "disableTextWrap": false,
-          "editorMode": "builder",
-          "expr": "reth_engine_rpc_fork_choice_updated_v2{$instance_label=\"$instance\", quantile=\"0.99\"}",
-          "fullMetaSearch": false,
-          "hide": false,
-          "includeNullMetadata": true,
-          "legendFormat": "engine_forkchoiceUpdatedV2 p99",
-          "range": true,
-          "refId": "J",
-          "useBackend": false
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "disableTextWrap": false,
-          "editorMode": "builder",
-          "expr": "reth_engine_rpc_fork_choice_updated_v3{$instance_label=\"$instance\", quantile=\"0\"}",
-          "fullMetaSearch": false,
-          "hide": false,
-          "includeNullMetadata": true,
-          "legendFormat": "engine_forkchoiceUpdatedV3 min",
+          "legendFormat": "min",
           "range": true,
           "refId": "K",
           "useBackend": false
@@ -1317,15 +1142,15 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "disableTextWrap": false,
-          "editorMode": "builder",
-          "expr": "reth_engine_rpc_fork_choice_updated_v3{$instance_label=\"$instance\", quantile=\"0.5\"}",
+          "editorMode": "code",
+          "expr": "reth_consensus_engine_beacon_forkchoice_updated_latency{$instance_label=\"$instance\", quantile=\"0.5\"}",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": true,
-          "legendFormat": "engine_forkchoiceUpdatedV3 p50",
+          "legendFormat": "p50",
           "range": true,
           "refId": "L",
           "useBackend": false
@@ -1336,12 +1161,12 @@
             "uid": "${datasource}"
           },
           "disableTextWrap": false,
-          "editorMode": "builder",
-          "expr": "reth_engine_rpc_fork_choice_updated_v3{$instance_label=\"$instance\", quantile=\"0.9\"}",
+          "editorMode": "code",
+          "expr": "reth_consensus_engine_beacon_forkchoice_updated_latency{$instance_label=\"$instance\", quantile=\"0.9\"}",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": true,
-          "legendFormat": "engine_forkchoiceUpdatedV3 p90",
+          "legendFormat": "p90",
           "range": true,
           "refId": "M",
           "useBackend": false
@@ -1349,15 +1174,15 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "disableTextWrap": false,
-          "editorMode": "builder",
-          "expr": "reth_engine_rpc_fork_choice_updated_v3{$instance_label=\"$instance\", quantile=\"0.95\"}",
+          "editorMode": "code",
+          "expr": "reth_consensus_engine_beacon_forkchoice_updated_latency{$instance_label=\"$instance\", quantile=\"0.95\"}",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": true,
-          "legendFormat": "engine_forkchoiceUpdatedV3 p95",
+          "legendFormat": "p95",
           "range": true,
           "refId": "N",
           "useBackend": false
@@ -1368,12 +1193,12 @@
             "uid": "${datasource}"
           },
           "disableTextWrap": false,
-          "editorMode": "builder",
-          "expr": "reth_engine_rpc_fork_choice_updated_v3{$instance_label=\"$instance\", quantile=\"0.99\"}",
+          "editorMode": "code",
+          "expr": "reth_consensus_engine_beacon_forkchoice_updated_latency{$instance_label=\"$instance\", quantile=\"0.99\"}",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": true,
-          "legendFormat": "engine_forkchoiceUpdatedV3 p99",
+          "legendFormat": "p99",
           "range": true,
           "refId": "O",
           "useBackend": false
@@ -1385,7 +1210,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "Latency histogram for the engine_newPayload RPC API",
       "fieldConfig": {
@@ -1417,6 +1242,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -1485,7 +1311,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
@@ -1493,251 +1319,12 @@
             "uid": "${datasource}"
           },
           "disableTextWrap": false,
-          "editorMode": "builder",
-          "expr": "reth_engine_rpc_new_payload_v1{$instance_label=\"$instance\", quantile=\"0\"}",
-          "fullMetaSearch": false,
-          "includeNullMetadata": true,
-          "legendFormat": "engine_newPayloadV1 min",
-          "range": true,
-          "refId": "A",
-          "useBackend": false
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "disableTextWrap": false,
-          "editorMode": "builder",
-          "expr": "reth_engine_rpc_new_payload_v1{$instance_label=\"$instance\", quantile=\"0.5\"}",
+          "editorMode": "code",
+          "expr": "reth_consensus_engine_beacon_new_payload_latency{$instance_label=\"$instance\", quantile=\"0\"}",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": true,
-          "legendFormat": "engine_newPayloadV1 p50",
-          "range": true,
-          "refId": "B",
-          "useBackend": false
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "disableTextWrap": false,
-          "editorMode": "builder",
-          "expr": "reth_engine_rpc_new_payload_v1{$instance_label=\"$instance\", quantile=\"0.9\"}",
-          "fullMetaSearch": false,
-          "hide": false,
-          "includeNullMetadata": true,
-          "legendFormat": "engine_newPayloadV1 p90",
-          "range": true,
-          "refId": "C",
-          "useBackend": false
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "disableTextWrap": false,
-          "editorMode": "builder",
-          "expr": "reth_engine_rpc_new_payload_v1{$instance_label=\"$instance\", quantile=\"0.95\"}",
-          "fullMetaSearch": false,
-          "hide": false,
-          "includeNullMetadata": true,
-          "legendFormat": "engine_newPayloadV1 p95",
-          "range": true,
-          "refId": "D",
-          "useBackend": false
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "disableTextWrap": false,
-          "editorMode": "builder",
-          "expr": "reth_engine_rpc_new_payload_v1{$instance_label=\"$instance\", quantile=\"0.99\"}",
-          "fullMetaSearch": false,
-          "hide": false,
-          "includeNullMetadata": true,
-          "legendFormat": "engine_newPayloadV1 p99",
-          "range": true,
-          "refId": "E",
-          "useBackend": false
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "disableTextWrap": false,
-          "editorMode": "builder",
-          "expr": "reth_engine_rpc_new_payload_v2{$instance_label=\"$instance\", quantile=\"0\"}",
-          "fullMetaSearch": false,
-          "hide": false,
-          "includeNullMetadata": true,
-          "legendFormat": "engine_newPayloadV2 min",
-          "range": true,
-          "refId": "F",
-          "useBackend": false
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "disableTextWrap": false,
-          "editorMode": "builder",
-          "expr": "reth_engine_rpc_new_payload_v2{$instance_label=\"$instance\", quantile=\"0.5\"}",
-          "fullMetaSearch": false,
-          "hide": false,
-          "includeNullMetadata": true,
-          "legendFormat": "engine_newPayloadV2 p50",
-          "range": true,
-          "refId": "G",
-          "useBackend": false
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "disableTextWrap": false,
-          "editorMode": "builder",
-          "expr": "reth_engine_rpc_new_payload_v2{$instance_label=\"$instance\", quantile=\"0.9\"}",
-          "fullMetaSearch": false,
-          "hide": false,
-          "includeNullMetadata": true,
-          "legendFormat": "engine_newPayloadV2 p90",
-          "range": true,
-          "refId": "H",
-          "useBackend": false
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "disableTextWrap": false,
-          "editorMode": "builder",
-          "expr": "reth_engine_rpc_new_payload_v2{$instance_label=\"$instance\", quantile=\"0.95\"}",
-          "fullMetaSearch": false,
-          "hide": false,
-          "includeNullMetadata": true,
-          "legendFormat": "engine_newPayloadV2 p95",
-          "range": true,
-          "refId": "I",
-          "useBackend": false
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "disableTextWrap": false,
-          "editorMode": "builder",
-          "expr": "reth_engine_rpc_new_payload_v2{$instance_label=\"$instance\", quantile=\"0.99\"}",
-          "fullMetaSearch": false,
-          "hide": false,
-          "includeNullMetadata": true,
-          "legendFormat": "engine_newPayloadV2 p99",
-          "range": true,
-          "refId": "J",
-          "useBackend": false
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "disableTextWrap": false,
-          "editorMode": "builder",
-          "expr": "reth_engine_rpc_new_payload_v3{$instance_label=\"$instance\", quantile=\"0\"}",
-          "fullMetaSearch": false,
-          "hide": false,
-          "includeNullMetadata": true,
-          "legendFormat": "engine_newPayloadV3 min",
-          "range": true,
-          "refId": "K",
-          "useBackend": false
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "disableTextWrap": false,
-          "editorMode": "builder",
-          "expr": "reth_engine_rpc_new_payload_v3{$instance_label=\"$instance\", quantile=\"0.5\"}",
-          "fullMetaSearch": false,
-          "hide": false,
-          "includeNullMetadata": true,
-          "legendFormat": "engine_newPayloadV3 p50",
-          "range": true,
-          "refId": "L",
-          "useBackend": false
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "disableTextWrap": false,
-          "editorMode": "builder",
-          "expr": "reth_engine_rpc_new_payload_v3{$instance_label=\"$instance\", quantile=\"0.9\"}",
-          "fullMetaSearch": false,
-          "hide": false,
-          "includeNullMetadata": true,
-          "legendFormat": "engine_newPayloadV3 p90",
-          "range": true,
-          "refId": "M",
-          "useBackend": false
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "disableTextWrap": false,
-          "editorMode": "builder",
-          "expr": "reth_engine_rpc_new_payload_v3{$instance_label=\"$instance\", quantile=\"0.95\"}",
-          "fullMetaSearch": false,
-          "hide": false,
-          "includeNullMetadata": true,
-          "legendFormat": "engine_newPayloadV3 p95",
-          "range": true,
-          "refId": "N",
-          "useBackend": false
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "disableTextWrap": false,
-          "editorMode": "builder",
-          "expr": "reth_engine_rpc_new_payload_v3{$instance_label=\"$instance\", quantile=\"0.99\"}",
-          "fullMetaSearch": false,
-          "hide": false,
-          "includeNullMetadata": true,
-          "legendFormat": "engine_newPayloadV3 p99",
-          "range": true,
-          "refId": "O",
-          "useBackend": false
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "disableTextWrap": false,
-          "editorMode": "builder",
-          "expr": "reth_engine_rpc_new_payload_v4{$instance_label=\"$instance\", quantile=\"0\"}",
-          "fullMetaSearch": false,
-          "hide": false,
-          "includeNullMetadata": true,
-          "legendFormat": "engine_newPayloadV4 min",
+          "legendFormat": "min",
           "range": true,
           "refId": "P",
           "useBackend": false
@@ -1748,12 +1335,12 @@
             "uid": "${datasource}"
           },
           "disableTextWrap": false,
-          "editorMode": "builder",
-          "expr": "reth_engine_rpc_new_payload_v4{$instance_label=\"$instance\", quantile=\"0.5\"}",
+          "editorMode": "code",
+          "expr": "reth_consensus_engine_beacon_new_payload_latency{$instance_label=\"$instance\", quantile=\"0.5\"}",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": true,
-          "legendFormat": "engine_newPayloadV4 p50",
+          "legendFormat": "p50",
           "range": true,
           "refId": "Q",
           "useBackend": false
@@ -1761,15 +1348,15 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "disableTextWrap": false,
-          "editorMode": "builder",
-          "expr": "reth_engine_rpc_new_payload_v4{$instance_label=\"$instance\", quantile=\"0.9\"}",
+          "editorMode": "code",
+          "expr": "reth_consensus_engine_beacon_new_payload_latency{$instance_label=\"$instance\", quantile=\"0.9\"}",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": true,
-          "legendFormat": "engine_newPayloadV4 p90",
+          "legendFormat": "p90",
           "range": true,
           "refId": "R",
           "useBackend": false
@@ -1780,12 +1367,12 @@
             "uid": "${datasource}"
           },
           "disableTextWrap": false,
-          "editorMode": "builder",
-          "expr": "reth_engine_rpc_new_payload_v4{$instance_label=\"$instance\", quantile=\"0.95\"}",
+          "editorMode": "code",
+          "expr": "reth_consensus_engine_beacon_new_payload_latency{$instance_label=\"$instance\", quantile=\"0.95\"}",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": true,
-          "legendFormat": "engine_newPayloadV4 p95",
+          "legendFormat": "p95",
           "range": true,
           "refId": "S",
           "useBackend": false
@@ -1793,15 +1380,15 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "disableTextWrap": false,
-          "editorMode": "builder",
-          "expr": "reth_engine_rpc_new_payload_v4{$instance_label=\"$instance\", quantile=\"0.99\"}",
+          "editorMode": "code",
+          "expr": "reth_consensus_engine_beacon_new_payload_latency{$instance_label=\"$instance\", quantile=\"0.99\"}",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": true,
-          "legendFormat": "engine_newPayloadV4 p99",
+          "legendFormat": "p99",
           "range": true,
           "refId": "T",
           "useBackend": false
@@ -1845,6 +1432,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -1888,15 +1476,15 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "reth_engine_rpc_new_payload_total_gas{$instance_label=\"$instance\", quantile=\"0.5\"}",
+          "expr": "reth_consensus_engine_beacon_new_payload_total_gas{$instance_label=\"$instance\", quantile=\"0.5\"}",
           "legendFormat": "p50",
           "range": true,
           "refId": "A"
@@ -1904,10 +1492,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "reth_engine_rpc_new_payload_total_gas{$instance_label=\"$instance\", quantile=\"0.9\"}",
+          "expr": "reth_consensus_engine_beacon_new_payload_total_gas{$instance_label=\"$instance\", quantile=\"0.9\"}",
           "hide": false,
           "legendFormat": "p90",
           "range": true,
@@ -1916,10 +1504,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "reth_engine_rpc_new_payload_total_gas{$instance_label=\"$instance\", quantile=\"0.95\"}",
+          "expr": "reth_consensus_engine_beacon_new_payload_total_gas{$instance_label=\"$instance\", quantile=\"0.95\"}",
           "hide": false,
           "legendFormat": "p95",
           "range": true,
@@ -1928,10 +1516,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "reth_engine_rpc_new_payload_total_gas{$instance_label=\"$instance\", quantile=\"0.99\"}",
+          "expr": "reth_consensus_engine_beacon_new_payload_total_gas{$instance_label=\"$instance\", quantile=\"0.99\"}",
           "hide": false,
           "legendFormat": "p99",
           "range": true,
@@ -1976,6 +1564,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -2019,15 +1608,15 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "reth_engine_rpc_new_payload_gas_per_second{$instance_label=\"$instance\", quantile=\"0.5\"}",
+          "expr": "reth_consensus_engine_beacon_new_payload_gas_per_second{$instance_label=\"$instance\", quantile=\"0.5\"}",
           "legendFormat": "p50",
           "range": true,
           "refId": "A"
@@ -2035,10 +1624,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "reth_engine_rpc_new_payload_gas_per_second{$instance_label=\"$instance\", quantile=\"0.9\"}",
+          "expr": "reth_consensus_engine_beacon_new_payload_gas_per_second{$instance_label=\"$instance\", quantile=\"0.9\"}",
           "hide": false,
           "legendFormat": "p90",
           "range": true,
@@ -2047,10 +1636,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "reth_engine_rpc_new_payload_gas_per_second{$instance_label=\"$instance\", quantile=\"0.95\"}",
+          "expr": "reth_consensus_engine_beacon_new_payload_gas_per_second{$instance_label=\"$instance\", quantile=\"0.95\"}",
           "hide": false,
           "legendFormat": "p95",
           "range": true,
@@ -2059,10 +1648,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "reth_engine_rpc_new_payload_gas_per_second{$instance_label=\"$instance\", quantile=\"0.99\"}",
+          "expr": "reth_consensus_engine_beacon_new_payload_gas_per_second{$instance_label=\"$instance\", quantile=\"0.99\"}",
           "hide": false,
           "legendFormat": "p99",
           "range": true,
@@ -2107,6 +1696,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -2150,12 +1740,12 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "code",
           "expr": "reth_sync_execution_gas_per_second{$instance_label=\"$instance\"}",
@@ -2182,7 +1772,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -2214,7 +1804,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -2246,7 +1836,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -2297,6 +1887,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -2344,12 +1935,12 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -2400,7 +1991,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "Engine API messages received by the CL, either engine_newPayload or engine_forkchoiceUpdated",
       "fieldConfig": {
@@ -2432,6 +2023,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -2478,7 +2070,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
@@ -2494,7 +2086,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "code",
           "expr": "rate(reth_consensus_engine_beacon_new_payload_messages{$instance_label=\"$instance\"}[$__rate_interval])",
@@ -2542,6 +2134,7 @@
               "type": "linear"
             },
             "showPoints": "never",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -2589,12 +2182,12 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "code",
           "expr": "rate(reth_consensus_engine_beacon_failed_new_payload_response_deliveries{$instance_label=\"$instance\"}[$__rate_interval])",
@@ -2620,7 +2213,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "Latency histogram for the engine_newPayload to engine_forkchoiceUpdated",
       "fieldConfig": {
@@ -2652,6 +2245,7 @@
               "type": "linear"
             },
             "showPoints": "never",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -2699,7 +2293,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
@@ -2707,7 +2301,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "reth_engine_rpc_new_payload_forkchoice_updated_time_diff{$instance_label=\"$instance\"}",
+          "expr": "reth_consensus_engine_beacon_new_payload_forkchoice_updated_time_diff{$instance_label=\"$instance\"}",
           "legendFormat": "p{{quantile}}",
           "range": true,
           "refId": "A"
@@ -2719,7 +2313,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "Latency histograms for the engine_getPayloadBodiesByHashV1 and engine_getPayloadBodiesByRangeV1 RPC APIs",
       "fieldConfig": {
@@ -2751,6 +2345,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -2798,7 +2393,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
@@ -2819,7 +2414,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -2851,7 +2446,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -2883,7 +2478,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -2915,7 +2510,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -2947,7 +2542,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -2998,6 +2593,7 @@
               "type": "linear"
             },
             "showPoints": "never",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -3041,12 +2637,12 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "code",
           "expr": "rate(reth_engine_rpc_blobs_blob_count{$instance_label=\"$instance\"}[$__rate_interval])",
@@ -3073,7 +2669,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "fieldConfig": {
         "defaults": {
@@ -3104,6 +2700,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -3151,7 +2748,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
@@ -3160,11 +2757,11 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "reth_engine_rpc_get_blobs_v1{$instance_label=\"$instance\", quantile=\"0.5\"}",
+          "expr": "reth_engine_rpc_get_blobs_v2{$instance_label=\"$instance\", quantile=\"0.5\"}",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": true,
-          "legendFormat": "engine_getBlobsV1 p50",
+          "legendFormat": "engine_getBlobsV2 p50",
           "range": true,
           "refId": "A",
           "useBackend": false
@@ -3172,15 +2769,15 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "reth_engine_rpc_get_blobs_v1{$instance_label=\"$instance\", quantile=\"0.95\"}",
+          "expr": "reth_engine_rpc_get_blobs_v2{$instance_label=\"$instance\", quantile=\"0.95\"}",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": true,
-          "legendFormat": "engine_getBlobsV1 p95",
+          "legendFormat": "engine_getBlobsV2 p95",
           "range": true,
           "refId": "B",
           "useBackend": false
@@ -3192,11 +2789,11 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "reth_engine_rpc_get_blobs_v1{$instance_label=\"$instance\", quantile=\"0.99\"}",
+          "expr": "reth_engine_rpc_get_blobs_v2{$instance_label=\"$instance\", quantile=\"0.99\"}",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": true,
-          "legendFormat": "engine_getBlobsV1 p99",
+          "legendFormat": "engine_getBlobsV2 p99",
           "range": true,
           "refId": "C",
           "useBackend": false
@@ -3204,15 +2801,15 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "reth_engine_rpc_get_blobs_v1{$instance_label=\"$instance\", quantile=\"0\"}",
+          "expr": "reth_engine_rpc_get_blobs_v2{$instance_label=\"$instance\", quantile=\"0\"}",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": true,
-          "legendFormat": "engine_getBlobsV1 min",
+          "legendFormat": "engine_getBlobsV2 min",
           "range": true,
           "refId": "D",
           "useBackend": false
@@ -3224,11 +2821,11 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "reth_engine_rpc_get_blobs_v1{$instance_label=\"$instance\", quantile=\"1\"}",
+          "expr": "reth_engine_rpc_get_blobs_v2{$instance_label=\"$instance\", quantile=\"1\"}",
           "fullMetaSearch": false,
           "hide": false,
           "includeNullMetadata": true,
-          "legendFormat": "engine_getBlobsV1 max",
+          "legendFormat": "engine_getBlobsV2 max",
           "range": true,
           "refId": "E",
           "useBackend": false
@@ -3240,7 +2837,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "Total pipeline runs triggered by the sync controller",
       "fieldConfig": {
@@ -3272,6 +2869,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -3318,7 +2916,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
@@ -3338,7 +2936,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "",
       "fieldConfig": {
@@ -3370,6 +2968,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -3416,7 +3015,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
@@ -3450,7 +3049,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "fieldConfig": {
         "defaults": {
@@ -3481,6 +3080,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -3528,7 +3128,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
@@ -3549,7 +3149,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -3601,6 +3201,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -3648,12 +3249,12 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "disableTextWrap": false,
           "editorMode": "code",
@@ -3687,7 +3288,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "disableTextWrap": false,
           "editorMode": "code",
@@ -3740,6 +3341,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -3787,12 +3389,12 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "disableTextWrap": false,
           "editorMode": "code",
@@ -3844,6 +3446,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -3877,9 +3480,7 @@
               "id": "byNames",
               "options": {
                 "mode": "exclude",
-                "names": [
-                  "Precompile cache hits"
-                ],
+                "names": ["Precompile cache hits"],
                 "prefix": "All except:",
                 "readOnly": true
               }
@@ -3889,7 +3490,7 @@
                 "id": "custom.hideFrom",
                 "value": {
                   "legend": false,
-                  "tooltip": false,
+                  "tooltip": true,
                   "viz": true
                 }
               }
@@ -3917,12 +3518,12 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "disableTextWrap": false,
           "editorMode": "code",
@@ -3987,6 +3588,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -4033,12 +3635,12 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "code",
           "expr": "reth_tree_root_proofs_processed_histogram{$instance_label=\"$instance\",quantile=~\"(0|0.5|0.9|0.95|1)\"}",
@@ -4085,6 +3687,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -4132,12 +3735,12 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "code",
           "expr": "reth_tree_root_proof_calculation_duration_histogram{$instance_label=\"$instance\",quantile=~\"(0|0.5|0.9|0.95|1)\"}",
@@ -4184,6 +3787,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -4231,19 +3835,110 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "reth_tree_root_pending_multiproofs_histogram{$instance_label=\"$instance\",quantile=~\"(0|0.5|0.9|0.95|1)\"}",
+          "expr": "reth_tree_root_pending_account_multiproofs_histogram{$instance_label=\"$instance\", quantile=\"0.5\"}",
           "instant": false,
-          "legendFormat": "{{quantile}} percentile",
+          "legendFormat": "accounts p50",
           "range": true,
           "refId": "Branch Nodes"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "reth_tree_root_pending_account_multiproofs_histogram{$instance_label=\"$instance\", quantile=\"0.9\"}",
+          "hide": false,
+          "instant": false,
+          "legendFormat": "accounts p90",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "reth_tree_root_pending_account_multiproofs_histogram{$instance_label=\"$instance\", quantile=\"0.95\"}",
+          "hide": false,
+          "instant": false,
+          "legendFormat": "accounts p95",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "reth_tree_root_pending_account_multiproofs_histogram{$instance_label=\"$instance\", quantile=\"0.99\"}",
+          "hide": false,
+          "instant": false,
+          "legendFormat": "accounts p99",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "reth_tree_root_pending_storage_multiproofs_histogram{$instance_label=\"$instance\", quantile=\"0.5\"}",
+          "hide": false,
+          "instant": false,
+          "legendFormat": "storage p50",
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "reth_tree_root_pending_storage_multiproofs_histogram{$instance_label=\"$instance\", quantile=\"0.9\"}",
+          "hide": false,
+          "instant": false,
+          "legendFormat": "storage p90",
+          "range": true,
+          "refId": "E"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "reth_tree_root_pending_storage_multiproofs_histogram{$instance_label=\"$instance\", quantile=\"0.95\"}",
+          "hide": false,
+          "instant": false,
+          "legendFormat": "storage p95",
+          "range": true,
+          "refId": "F"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "reth_tree_root_pending_storage_multiproofs_histogram{$instance_label=\"$instance\", quantile=\"0.99\"}",
+          "hide": false,
+          "instant": false,
+          "legendFormat": "storage p99",
+          "range": true,
+          "refId": "G"
         }
       ],
       "title": "Pending MultiProof requests",
@@ -4283,6 +3978,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -4330,22 +4026,112 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "reth_tree_root_inflight_multiproofs_histogram{$instance_label=\"$instance\",quantile=~\"(0|0.5|0.9|0.95|1)\"}",
+          "expr": "reth_tree_root_active_account_workers_histogram{$instance_label=\"$instance\",quantile=\"0.5\"}",
           "instant": false,
-          "legendFormat": "{{quantile}} percentile",
+          "legendFormat": "accounts p50",
           "range": true,
-          "refId": "Branch Nodes"
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "reth_tree_root_active_account_workers_histogram{$instance_label=\"$instance\",quantile=\"0.9\"}",
+          "hide": false,
+          "instant": false,
+          "legendFormat": "accounts p90",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "reth_tree_root_active_account_workers_histogram{$instance_label=\"$instance\",quantile=\"0.95\"}",
+          "hide": false,
+          "instant": false,
+          "legendFormat": "accounts p95",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "reth_tree_root_active_account_workers_histogram{$instance_label=\"$instance\",quantile=\"0.99\"}",
+          "hide": false,
+          "instant": false,
+          "legendFormat": "accounts p99",
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "reth_tree_root_active_storage_workers_histogram{$instance_label=\"$instance\",quantile=\"0.5\"}",
+          "instant": false,
+          "legendFormat": "storages p50",
+          "range": true,
+          "refId": "E"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "reth_tree_root_active_storage_workers_histogram{$instance_label=\"$instance\",quantile=\"0.9\"}",
+          "hide": false,
+          "instant": false,
+          "legendFormat": "storages p90",
+          "range": true,
+          "refId": "F"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "reth_tree_root_active_storage_workers_histogram{$instance_label=\"$instance\",quantile=\"0.95\"}",
+          "hide": false,
+          "instant": false,
+          "legendFormat": "storages p95",
+          "range": true,
+          "refId": "G"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "reth_tree_root_active_storage_workers_histogram{$instance_label=\"$instance\",quantile=\"0.99\"}",
+          "hide": false,
+          "instant": false,
+          "legendFormat": "storages p99",
+          "range": true,
+          "refId": "H"
         }
       ],
-      "title": "In-flight MultiProof requests",
+      "title": "Active multiproof workers",
       "type": "timeseries"
     },
     {
@@ -4382,6 +4168,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -4429,22 +4216,22 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "reth_sparse_state_trie_multiproof_skipped_storage_nodes{$instance_label=\"$instance\",quantile=~\"(0|0.5|0.9|0.95|1)\"}",
+          "expr": "reth_sparse_state_trie_multiproof_total_account_nodes{$instance_label=\"$instance\",quantile=~\"(0|0.5|0.9|0.95|1)\"}",
           "instant": false,
-          "legendFormat": "Storage {{quantile}} percentile",
+          "legendFormat": "Account {{quantile}} percentile",
           "range": true,
           "refId": "Branch Nodes"
         }
       ],
-      "title": "Redundant multiproof storage nodes",
+      "title": "Total multiproof account nodes",
       "type": "timeseries"
     },
     {
@@ -4481,6 +4268,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -4528,22 +4316,22 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "reth_sparse_state_trie_multiproof_skipped_account_nodes{$instance_label=\"$instance\",quantile=~\"(0|0.5|0.9|0.95|1)\"}",
+          "expr": "reth_sparse_state_trie_multiproof_total_storage_nodes{$instance_label=\"$instance\",quantile=~\"(0|0.5|0.9|0.95|1)\"}",
           "instant": false,
-          "legendFormat": "Account {{quantile}} percentile",
+          "legendFormat": "Storage {{quantile}} percentile",
           "range": true,
           "refId": "Branch Nodes"
         }
       ],
-      "title": "Redundant multiproof account nodes",
+      "title": "Total multiproof storage nodes",
       "type": "timeseries"
     },
     {
@@ -4580,6 +4368,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -4627,15 +4416,15 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "reth_sparse_state_trie_multiproof_total_account_nodes{$instance_label=\"$instance\",quantile=~\"(0|0.5|0.9|0.95|1)\"}",
+          "expr": "reth_sparse_state_trie_multiproof_skipped_account_nodes{$instance_label=\"$instance\",quantile=~\"(0|0.5|0.9|0.95|1)\"}",
           "hide": false,
           "instant": false,
           "legendFormat": "Account {{quantile}} percentile",
@@ -4643,7 +4432,7 @@
           "refId": "A"
         }
       ],
-      "title": "Total multiproof account nodes",
+      "title": "Redundant multiproof account nodes",
       "type": "timeseries"
     },
     {
@@ -4680,6 +4469,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -4727,22 +4517,22 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "reth_sparse_state_trie_multiproof_total_storage_nodes{$instance_label=\"$instance\",quantile=~\"(0|0.5|0.9|0.95|1)\"}",
+          "expr": "reth_sparse_state_trie_multiproof_skipped_storage_nodes{$instance_label=\"$instance\",quantile=~\"(0|0.5|0.9|0.95|1)\"}",
           "instant": false,
           "legendFormat": "Storage {{quantile}} percentile",
           "range": true,
           "refId": "Branch Nodes"
         }
       ],
-      "title": "Total multiproof storage nodes",
+      "title": "Redundant multiproof storage nodes",
       "type": "timeseries"
     },
     {
@@ -4780,6 +4570,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -4827,12 +4618,12 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "code",
           "expr": "reth_tree_root_multiproof_task_total_duration_histogram{$instance_label=\"$instance\",quantile=~\"(0|0.5|0.9|0.95|1)\"}",
@@ -4851,7 +4642,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Histogram for state root latency, the duration between finishing execution and receiving the state root",
+      "description": "Histogram for state root latency, the time spent blocked waiting for the state root.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -4881,6 +4672,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -4906,32 +4698,7 @@
           },
           "unit": "s"
         },
-        "overrides": [
-          {
-            "__systemRef": "hideSeriesFrom",
-            "matcher": {
-              "id": "byNames",
-              "options": {
-                "mode": "exclude",
-                "names": [
-                  "State Root Duration p0.95"
-                ],
-                "prefix": "All except:",
-                "readOnly": true
-              }
-            },
-            "properties": [
-              {
-                "id": "custom.hideFrom",
-                "value": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": true
-                }
-              }
-            ]
-          }
-        ]
+        "overrides": []
       },
       "gridPos": {
         "h": 8,
@@ -4953,16 +4720,16 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "reth_sync_block_validation_state_root_histogram{\"$instance_label\"=\"$instance\"}",
+          "expr": "reth_sync_block_validation_state_root_histogram{$instance_label=\"$instance\"}",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "instant": false,
@@ -5025,6 +4792,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -5068,12 +4836,12 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "code",
           "exemplar": false,
@@ -5158,12 +4926,12 @@
           "unit": "percentunit"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "code",
           "exemplar": false,
@@ -5214,6 +4982,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -5257,12 +5026,12 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "code",
           "exemplar": false,
@@ -5312,6 +5081,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -5355,12 +5125,12 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "code",
           "exemplar": false,
@@ -5413,6 +5183,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -5452,10 +5223,7 @@
               {
                 "id": "custom.lineStyle",
                 "value": {
-                  "dash": [
-                    0,
-                    10
-                  ],
+                  "dash": [0, 10],
                   "fill": "dot"
                 }
               },
@@ -5487,12 +5255,12 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "disableTextWrap": false,
           "editorMode": "code",
@@ -5573,6 +5341,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -5612,10 +5381,7 @@
               {
                 "id": "custom.lineStyle",
                 "value": {
-                  "dash": [
-                    0,
-                    10
-                  ],
+                  "dash": [0, 10],
                   "fill": "dot"
                 }
               },
@@ -5647,12 +5413,12 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -5730,37 +5496,32 @@
       },
       "id": 48,
       "options": {
-        "displayLabels": [
-          "name"
-        ],
+        "displayLabels": ["name"],
         "legend": {
           "displayMode": "table",
           "placement": "right",
           "showLegend": true,
-          "values": [
-            "value"
-          ]
+          "values": ["value"]
         },
         "pieType": "pie",
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+          "calcs": ["lastNotNull"],
           "fields": "",
           "values": false
         },
+        "sort": "desc",
         "tooltip": {
           "hideZeros": false,
           "mode": "single",
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "builder",
           "expr": "reth_db_table_size{$instance_label=\"$instance\"}",
@@ -5808,6 +5569,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -5855,12 +5617,12 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "code",
           "exemplar": false,
@@ -5910,30 +5672,27 @@
           "displayMode": "table",
           "placement": "right",
           "showLegend": true,
-          "values": [
-            "value"
-          ]
+          "values": ["value"]
         },
         "pieType": "pie",
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+          "calcs": ["lastNotNull"],
           "fields": "",
           "values": false
         },
+        "sort": "desc",
         "tooltip": {
           "hideZeros": false,
           "mode": "single",
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "builder",
           "expr": "sum by (type) ( reth_db_table_pages{$instance_label=\"$instance\"} )",
@@ -5980,6 +5739,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -6028,12 +5788,12 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "code",
           "expr": "sum by (job) ( reth_db_table_size{$instance_label=\"$instance\"} )",
@@ -6080,6 +5840,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -6127,12 +5888,12 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "code",
           "expr": "sum(reth_db_freelist{$instance_label=\"$instance\"}) by (job)",
@@ -6159,6 +5920,9 @@
             "cellOptions": {
               "type": "auto"
             },
+            "footer": {
+              "reducers": []
+            },
             "inspect": false
           },
           "mappings": [],
@@ -6184,7 +5948,7 @@
             },
             "properties": [
               {
-                "id": "custom.hidden",
+                "id": "custom.hideFrom.viz",
                 "value": true
               }
             ]
@@ -6196,7 +5960,7 @@
             },
             "properties": [
               {
-                "id": "custom.hidden",
+                "id": "custom.hideFrom.viz",
                 "value": true
               }
             ]
@@ -6208,7 +5972,7 @@
             },
             "properties": [
               {
-                "id": "custom.hidden",
+                "id": "custom.hideFrom.viz",
                 "value": true
               }
             ]
@@ -6220,7 +5984,7 @@
             },
             "properties": [
               {
-                "id": "custom.hidden",
+                "id": "custom.hideFrom.viz",
                 "value": true
               }
             ]
@@ -6232,7 +5996,7 @@
             },
             "properties": [
               {
-                "id": "custom.hidden",
+                "id": "custom.hideFrom.viz",
                 "value": true
               }
             ]
@@ -6276,22 +6040,14 @@
       "id": 58,
       "options": {
         "cellHeight": "sm",
-        "footer": {
-          "countRows": false,
-          "fields": "",
-          "reducer": [
-            "sum"
-          ],
-          "show": false
-        },
         "showHeader": true
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "code",
           "exemplar": false,
@@ -6350,37 +6106,32 @@
       },
       "id": 202,
       "options": {
-        "displayLabels": [
-          "name"
-        ],
+        "displayLabels": ["name"],
         "legend": {
           "displayMode": "table",
           "placement": "right",
           "showLegend": true,
-          "values": [
-            "value"
-          ]
+          "values": ["value"]
         },
         "pieType": "pie",
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+          "calcs": ["lastNotNull"],
           "fields": "",
           "values": false
         },
+        "sort": "desc",
         "tooltip": {
           "hideZeros": false,
           "mode": "single",
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "code",
           "expr": "reth_static_files_segment_size{$instance_label=\"$instance\"}",
@@ -6407,6 +6158,9 @@
             "align": "left",
             "cellOptions": {
               "type": "auto"
+            },
+            "footer": {
+              "reducers": []
             },
             "inspect": false
           },
@@ -6461,7 +6215,7 @@
             },
             "properties": [
               {
-                "id": "custom.hidden",
+                "id": "custom.hideFrom.viz",
                 "value": true
               }
             ]
@@ -6473,7 +6227,7 @@
             },
             "properties": [
               {
-                "id": "custom.hidden",
+                "id": "custom.hideFrom.viz",
                 "value": true
               }
             ]
@@ -6485,7 +6239,7 @@
             },
             "properties": [
               {
-                "id": "custom.hidden",
+                "id": "custom.hideFrom.viz",
                 "value": true
               }
             ]
@@ -6497,7 +6251,7 @@
             },
             "properties": [
               {
-                "id": "custom.hidden",
+                "id": "custom.hideFrom.viz",
                 "value": true
               }
             ]
@@ -6513,22 +6267,14 @@
       "id": 204,
       "options": {
         "cellHeight": "sm",
-        "footer": {
-          "countRows": false,
-          "fields": "",
-          "reducer": [
-            "sum"
-          ],
-          "show": false
-        },
         "showHeader": true
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "code",
           "exemplar": false,
@@ -6557,6 +6303,9 @@
             "align": "left",
             "cellOptions": {
               "type": "auto"
+            },
+            "footer": {
+              "reducers": []
             },
             "inspect": false
           },
@@ -6611,7 +6360,7 @@
             },
             "properties": [
               {
-                "id": "custom.hidden",
+                "id": "custom.hideFrom.viz",
                 "value": true
               }
             ]
@@ -6623,7 +6372,7 @@
             },
             "properties": [
               {
-                "id": "custom.hidden",
+                "id": "custom.hideFrom.viz",
                 "value": true
               }
             ]
@@ -6635,7 +6384,7 @@
             },
             "properties": [
               {
-                "id": "custom.hidden",
+                "id": "custom.hideFrom.viz",
                 "value": true
               }
             ]
@@ -6647,7 +6396,7 @@
             },
             "properties": [
               {
-                "id": "custom.hidden",
+                "id": "custom.hideFrom.viz",
                 "value": true
               }
             ]
@@ -6663,22 +6412,14 @@
       "id": 205,
       "options": {
         "cellHeight": "sm",
-        "footer": {
-          "countRows": false,
-          "fields": "",
-          "reducer": [
-            "sum"
-          ],
-          "show": false
-        },
         "showHeader": true
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "code",
           "exemplar": false,
@@ -6728,6 +6469,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -6775,12 +6517,12 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "code",
           "expr": "sum by (job) ( reth_static_files_segment_size{$instance_label=\"$instance\"} )",
@@ -6827,6 +6569,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -6874,12 +6617,12 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "code",
           "expr": "max(max_over_time(reth_static_files_jar_provider_write_duration_seconds{$instance_label=\"$instance\", operation=\"commit-writer\", quantile=\"1\"}[$__interval]) > 0) by (segment)",
@@ -6940,6 +6683,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -6954,7 +6698,8 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green"
+                "color": "green",
+                "value": 0
               },
               {
                 "color": "red",
@@ -6985,12 +6730,12 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "11.5.1",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "builder",
           "expr": "reth_blockchain_tree_canonical_chain_height{$instance_label=\"$instance\"}",
@@ -7038,6 +6783,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -7052,7 +6798,8 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green"
+                "color": "green",
+                "value": 0
               },
               {
                 "color": "red",
@@ -7083,12 +6830,12 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "11.5.1",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "builder",
           "expr": "reth_blockchain_tree_block_buffer_blocks{$instance_label=\"$instance\"}",
@@ -7135,6 +6882,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -7149,7 +6897,8 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green"
+                "color": "green",
+                "value": 0
               },
               {
                 "color": "red",
@@ -7181,12 +6930,12 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "11.5.1",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "code",
           "expr": "increase(reth_blockchain_tree_reorgs{$instance_label=\"$instance\"}[$__rate_interval])",
@@ -7233,6 +6982,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -7247,7 +6997,8 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green"
+                "color": "green",
+                "value": 0
               },
               {
                 "color": "red",
@@ -7279,12 +7030,12 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "11.5.1",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "code",
           "expr": "reth_blockchain_tree_latest_reorg_depth{$instance_label=\"$instance\"}",
@@ -7345,6 +7096,7 @@
               "type": "linear"
             },
             "showPoints": "never",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -7417,12 +7169,12 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "disableTextWrap": false,
           "editorMode": "code",
@@ -7509,12 +7261,12 @@
           "unit": "percentunit"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "code",
           "exemplar": false,
@@ -7563,6 +7315,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -7610,12 +7363,12 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "code",
           "expr": "max(max_over_time(reth_rpc_server_calls_time_seconds{$instance_label=\"$instance\"}[$__rate_interval])) by (method) > 0",
@@ -7698,12 +7451,12 @@
           "unit": "percentunit"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "code",
           "exemplar": false,
@@ -7752,6 +7505,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -7835,12 +7589,12 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -7873,7 +7627,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -7907,7 +7661,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -7941,7 +7695,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "disableTextWrap": false,
           "editorMode": "builder",
@@ -7979,7 +7733,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "fieldConfig": {
         "defaults": {
@@ -8010,6 +7764,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -8057,7 +7812,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
@@ -8065,7 +7820,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(reth_rpc_server_calls_successful_total{instance =~ \"$instance\"}[$__rate_interval])) by (method) > 0",
+          "expr": "sum(rate(reth_rpc_server_calls_successful_total{$instance_label=\"$instance\"}[$__rate_interval])) by (method) > 0",
           "instant": false,
           "legendFormat": "{{method}}",
           "range": true,
@@ -8092,7 +7847,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "fieldConfig": {
         "defaults": {
@@ -8123,6 +7878,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -8137,7 +7893,8 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green"
+                "color": "green",
+                "value": 0
               },
               {
                 "color": "red",
@@ -8193,7 +7950,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "11.5.1",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
@@ -8209,7 +7966,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "builder",
           "expr": "reth_downloaders_headers_total_flushed{$instance_label=\"$instance\"}",
@@ -8234,7 +7991,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "builder",
           "expr": "rate(reth_downloaders_headers_total_flushed{$instance_label=\"$instance\"}[$__rate_interval])",
@@ -8282,6 +8039,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -8296,7 +8054,8 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green"
+                "color": "green",
+                "value": 0
               },
               {
                 "color": "red",
@@ -8328,12 +8087,12 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "11.5.1",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "builder",
           "expr": "rate(reth_downloaders_headers_timeout_errors{$instance_label=\"$instance\"}[$__rate_interval])",
@@ -8356,7 +8115,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "builder",
           "expr": "rate(reth_downloaders_headers_validation_errors{$instance_label=\"$instance\"}[$__rate_interval])",
@@ -8404,6 +8163,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -8418,7 +8178,8 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green"
+                "color": "green",
+                "value": 0
               },
               {
                 "color": "red",
@@ -8449,12 +8210,12 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "11.5.1",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "builder",
           "expr": "reth_downloaders_headers_in_flight_requests{$instance_label=\"$instance\"}",
@@ -8495,7 +8256,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "The internal state of the headers downloader: the number of downloaded headers, and the number of headers sent to the header stage.",
       "fieldConfig": {
@@ -8527,6 +8288,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -8607,7 +8369,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
@@ -8623,7 +8385,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "builder",
           "expr": "reth_downloaders_bodies_total_flushed{$instance_label=\"$instance\"}",
@@ -8647,7 +8409,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "builder",
           "expr": "rate(reth_downloaders_bodies_total_downloaded{$instance_label=\"$instance\"}[$__rate_interval])",
@@ -8671,7 +8433,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "builder",
           "expr": "reth_downloaders_bodies_buffered_blocks{$instance_label=\"$instance\"}",
@@ -8699,7 +8461,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "Internal errors in the bodies downloader. These are expected to happen from time to time.",
       "fieldConfig": {
@@ -8731,6 +8493,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -8775,7 +8538,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
@@ -8791,7 +8554,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "builder",
           "expr": "rate(reth_downloaders_bodies_unexpected_errors{$instance_label=\"$instance\"}[$__rate_interval])",
@@ -8819,7 +8582,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "The number of connected peers and in-progress requests for bodies.",
       "fieldConfig": {
@@ -8851,6 +8614,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -8897,7 +8661,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
@@ -8913,7 +8677,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "builder",
           "expr": "reth_network_connected_peers{$instance_label=\"$instance\"}",
@@ -8961,6 +8725,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -9025,12 +8790,12 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "builder",
           "expr": "reth_downloaders_bodies_buffered_blocks_size_bytes{$instance_label=\"$instance\"}",
@@ -9058,7 +8823,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "The number of blocks in a request and size in bytes of those block responses",
       "fieldConfig": {
@@ -9090,6 +8855,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -9154,7 +8920,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
@@ -9171,7 +8937,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "builder",
           "expr": "reth_downloaders_bodies_response_response_length{$instance_label=\"$instance\"}",
@@ -9213,7 +8979,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "",
       "fieldConfig": {
@@ -9245,6 +9011,7 @@
               "type": "linear"
             },
             "showPoints": "never",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -9318,7 +9085,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
@@ -9343,7 +9110,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "",
       "fieldConfig": {
@@ -9375,6 +9142,7 @@
               "type": "linear"
             },
             "showPoints": "never",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -9448,7 +9216,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
@@ -9473,7 +9241,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "",
       "fieldConfig": {
@@ -9505,6 +9273,7 @@
               "type": "linear"
             },
             "showPoints": "never",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -9578,7 +9347,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
@@ -9603,7 +9372,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "",
       "fieldConfig": {
@@ -9635,6 +9404,7 @@
               "type": "linear"
             },
             "showPoints": "never",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -9708,7 +9478,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
@@ -9747,7 +9517,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "Number of active jobs",
       "fieldConfig": {
@@ -9779,6 +9549,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -9825,7 +9596,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
@@ -9845,7 +9616,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "Total number of initiated jobs",
       "fieldConfig": {
@@ -9877,6 +9648,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -9923,7 +9695,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
@@ -9943,7 +9715,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "Total number of failed jobs",
       "fieldConfig": {
@@ -9975,6 +9747,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -10021,7 +9794,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
@@ -10054,7 +9827,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "fieldConfig": {
         "defaults": {
@@ -10085,6 +9858,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": true,
             "stacking": {
               "group": "A",
@@ -10133,7 +9907,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
@@ -10154,7 +9928,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "fieldConfig": {
         "defaults": {
@@ -10185,6 +9959,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": true,
             "stacking": {
               "group": "A",
@@ -10233,7 +10008,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
@@ -10254,7 +10029,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "fieldConfig": {
         "defaults": {
@@ -10285,6 +10060,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": true,
             "stacking": {
               "group": "A",
@@ -10332,13 +10108,14 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
             "uid": "${datasource}"
           },
+          "description": "Archive and full nodes prune headers, transactions and receipts in MDBX (hot db) after they have been written to static files (cold db). Full nodes additionally prune history indices.",
           "editorMode": "code",
           "expr": "reth_pruner_segments_highest_pruned_block{$instance_label=\"$instance\"}",
           "instant": false,
@@ -10366,7 +10143,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "fieldConfig": {
         "defaults": {
@@ -10397,6 +10174,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -10457,7 +10235,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
@@ -10474,7 +10252,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "builder",
           "expr": "reth_jemalloc_allocated{$instance_label=\"$instance\"}",
@@ -10500,7 +10278,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "builder",
           "expr": "reth_jemalloc_metadata{$instance_label=\"$instance\"}",
@@ -10526,7 +10304,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "builder",
           "expr": "reth_jemalloc_retained{$instance_label=\"$instance\"}",
@@ -10575,6 +10353,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -10622,12 +10401,12 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "code",
           "expr": "reth_process_resident_memory_bytes{$instance_label=\"$instance\"}",
@@ -10675,6 +10454,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -10722,12 +10502,12 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "builder",
           "expr": "avg(rate(reth_process_cpu_seconds_total{$instance_label=\"$instance\"}[1m]))",
@@ -10775,6 +10555,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -10822,12 +10603,12 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "builder",
           "expr": "reth_process_open_fds{$instance_label=\"$instance\"}",
@@ -10875,6 +10656,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -10922,12 +10704,12 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "editorMode": "code",
           "expr": "reth_executor_spawn_critical_tasks_total{$instance_label=\"$instance\"}- reth_executor_spawn_finished_critical_tasks_total{$instance_label=\"$instance\"}",
@@ -10976,6 +10758,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -11036,12 +10819,12 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0-pre",
+      "pluginVersion": "12.2.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "disableTextWrap": false,
           "editorMode": "code",
@@ -11074,19 +10857,152 @@
       "type": "timeseries"
     },
     {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Tracks the number of regular blocking tasks currently ran by the executor.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "semi-dark-red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "tasks/s"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "C"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "tasks"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 362
+      },
+      "id": 1007,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.2.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "disableTextWrap": false,
+          "editorMode": "code",
+          "exemplar": false,
+          "expr": "rate(reth_executor_spawn_regular_blocking_tasks_total{$instance_label=\"$instance\"}[$__rate_interval])",
+          "fullMetaSearch": false,
+          "hide": false,
+          "includeNullMetadata": false,
+          "instant": false,
+          "legendFormat": "Tasks started",
+          "range": true,
+          "refId": "A",
+          "useBackend": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "reth_executor_spawn_regular_blocking_tasks_total{$instance_label=\"$instance\"} - reth_executor_spawn_finished_regular_blocking_tasks_total{$instance_label=\"$instance\"}",
+          "hide": false,
+          "instant": false,
+          "legendFormat": "Tasks running",
+          "range": true,
+          "refId": "C"
+        }
+      ],
+      "title": "Task Executor regular blocking tasks",
+      "type": "timeseries"
+    },
+    {
       "collapsed": true,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 362
+        "y": 370
       },
       "id": 236,
       "panels": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "description": "The total number of canonical state notifications sent to ExExes.",
           "fieldConfig": {
@@ -11182,7 +11098,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "description": "The total number of events ExExes have sent to the manager.",
           "fieldConfig": {
@@ -11278,7 +11194,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "description": "Current and Maximum capacity of the internal state notifications buffer.",
           "fieldConfig": {
@@ -11370,7 +11286,7 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "${datasource}"
               },
               "editorMode": "builder",
               "expr": "max_over_time(reth_exex_manager_max_capacity{$instance_label=\"$instance\"}[1h])",
@@ -11466,7 +11382,7 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "${datasource}"
               },
               "editorMode": "builder",
               "expr": "reth_exex_manager_buffer_size{$instance_label=\"$instance\"}",
@@ -11521,9 +11437,7 @@
             "orientation": "auto",
             "percentChangeColorMode": "standard",
             "reduceOptions": {
-              "calcs": [
-                "lastNotNull"
-              ],
+              "calcs": ["lastNotNull"],
               "fields": "",
               "values": false
             },
@@ -11536,7 +11450,7 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "${datasource}"
               },
               "editorMode": "builder",
               "expr": "reth_exex_manager_num_exexs{$instance_label=\"$instance\"}",
@@ -11559,7 +11473,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 363
+        "y": 371
       },
       "id": 241,
       "panels": [
@@ -11647,7 +11561,7 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "${datasource}"
               },
               "editorMode": "code",
               "expr": "reth_exex_wal_lowest_committed_block_height{$instance_label=\"$instance\"}",
@@ -11677,7 +11591,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "description": "",
           "fieldConfig": {
@@ -11771,7 +11685,7 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "${datasource}"
               },
               "editorMode": "code",
               "expr": "reth_exex_wal_notifications_count{$instance_label=\"$instance\"}",
@@ -11870,7 +11784,7 @@
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
+                "uid": "${datasource}"
               },
               "editorMode": "code",
               "expr": "reth_exex_wal_size_bytes{$instance_label=\"$instance\"}",
@@ -11890,7 +11804,7 @@
     }
   ],
   "refresh": "5s",
-  "schemaVersion": 41,
+  "schemaVersion": 42,
   "tags": [],
   "templating": {
     "list": [
@@ -11956,6 +11870,6 @@
   "timezone": "",
   "title": "Reth",
   "uid": "2k8BXz24x",
-  "version": 2,
+  "version": 4,
   "weekStart": ""
 }

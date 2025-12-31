@@ -571,6 +571,7 @@ impl<N: NetworkPrimitives> SessionManager<N> {
                     range_info: None,
                     local_range_info: self.local_range_info.clone(),
                     range_update_interval,
+                    last_sent_latest_block: None,
                 };
 
                 self.spawn(session);
@@ -904,7 +905,7 @@ pub(crate) async fn start_pending_incoming_session<N: NetworkPrimitives>(
 }
 
 /// Starts the authentication process for a connection initiated by a remote peer.
-#[instrument(skip_all, fields(%remote_addr, peer_id), target = "net")]
+#[instrument(level = "trace", target = "net::network", skip_all, fields(%remote_addr, peer_id))]
 #[expect(clippy::too_many_arguments)]
 async fn start_pending_outbound_session<N: NetworkPrimitives>(
     handshake: Arc<dyn EthRlpxHandshake>,
@@ -1150,18 +1151,20 @@ async fn authenticate_stream<N: NetworkPrimitives>(
                 .ok();
         }
 
-        let (multiplex_stream, their_status) =
-            match multiplex_stream.into_eth_satellite_stream(status, fork_filter).await {
-                Ok((multiplex_stream, their_status)) => (multiplex_stream, their_status),
-                Err(err) => {
-                    return PendingSessionEvent::Disconnected {
-                        remote_addr,
-                        session_id,
-                        direction,
-                        error: Some(PendingSessionHandshakeError::Eth(err)),
-                    }
+        let (multiplex_stream, their_status) = match multiplex_stream
+            .into_eth_satellite_stream(status, fork_filter, handshake)
+            .await
+        {
+            Ok((multiplex_stream, their_status)) => (multiplex_stream, their_status),
+            Err(err) => {
+                return PendingSessionEvent::Disconnected {
+                    remote_addr,
+                    session_id,
+                    direction,
+                    error: Some(PendingSessionHandshakeError::Eth(err)),
                 }
-            };
+            }
+        };
 
         (multiplex_stream.into(), their_status)
     };

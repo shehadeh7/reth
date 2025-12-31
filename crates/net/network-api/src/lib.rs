@@ -11,7 +11,7 @@
     html_favicon_url = "https://avatars0.githubusercontent.com/u/97369466?s=256",
     issue_tracker_base_url = "https://github.com/paradigmxyz/reth/issues/"
 )]
-#![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 pub mod downloaders;
 /// Network Error
@@ -112,11 +112,15 @@ pub trait PeersInfo: Send + Sync {
 #[auto_impl::auto_impl(&, Arc)]
 pub trait Peers: PeersInfo {
     /// Adds a peer to the peer set with TCP `SocketAddr`.
+    ///
+    /// If the peer already exists, then this will update its tracked info.
     fn add_peer(&self, peer: PeerId, tcp_addr: SocketAddr) {
         self.add_peer_kind(peer, PeerKind::Static, tcp_addr, None);
     }
 
     /// Adds a peer to the peer set with TCP and UDP `SocketAddr`.
+    ///
+    /// If the peer already exists, then this will update its tracked info.
     fn add_peer_with_udp(&self, peer: PeerId, tcp_addr: SocketAddr, udp_addr: SocketAddr) {
         self.add_peer_kind(peer, PeerKind::Static, tcp_addr, Some(udp_addr));
     }
@@ -137,6 +141,8 @@ pub trait Peers: PeersInfo {
     }
 
     /// Adds a peer to the known peer set, with the given kind.
+    ///
+    /// If the peer already exists, then this will update its tracked info.
     fn add_peer_kind(
         &self,
         peer: PeerId,
@@ -192,7 +198,7 @@ pub trait Peers: PeersInfo {
     /// Disconnect an existing connection to the given peer using the provided reason
     fn disconnect_peer_with_reason(&self, peer: PeerId, reason: DisconnectReason);
 
-    /// Connect to the given peer. NOTE: if the maximum number out outbound sessions is reached,
+    /// Connect to the given peer. NOTE: if the maximum number of outbound sessions is reached,
     /// this won't do anything. See `reth_network::SessionManager::dial_outbound`.
     fn connect_peer(&self, peer: PeerId, tcp_addr: SocketAddr) {
         self.connect_peer_kind(peer, PeerKind::Static, tcp_addr, None)
