@@ -29,7 +29,6 @@ pub struct Config {
 pub struct TransferEdge {
     pub amount: U256,
     pub block: u64,
-    pub token: Address,
 }
 
 #[derive(Default, Clone)]
@@ -341,42 +340,22 @@ impl AMLMotifDetector {
         }
 
         // 2. Gather-scatter (hub): multiple sources → from_addr → receiver
-        let mut receiver_data = HashMap::<Address, (HashSet<Address>, U256)>::new();
-
-        // Sources feeding from_addr
+        // Gather-scatter: Check if this transaction is part of active mixing
         let sources = self.neighbors_directed_view_addrs(from_addr, Incoming);
-        // Receivers from from_addr
-        let receivers = outgoing_neighbors; // already includes ephemeral neighbor if needed
 
-        for recv_addr in receivers {
-            let (sender_to_recv_sum, sender_to_recv_max_block) =
-                self.window_sum_and_max_with_ephemeral(from_addr, recv_addr, current_block, ephemeral);
-            if sender_to_recv_sum == U256::ZERO {
-                continue;
-            }
-
-            for src_addr in sources.iter() {
-                let (source_to_sender_sum, source_to_sender_max_block) =
-                    self.window_sum_and_max_with_ephemeral(*src_addr, from_addr, current_block, ephemeral);
-                if source_to_sender_sum == U256::ZERO {
-                    continue;
-                }
-
-                // Temporal ordering: latest source→sender must be before or at latest sender→recv
-                if source_to_sender_max_block <= sender_to_recv_max_block {
-                    let bottleneck = source_to_sender_sum.min(sender_to_recv_sum);
-                    let entry = receiver_data.entry(recv_addr).or_insert((HashSet::new(), U256::ZERO));
-                    entry.0.insert(*src_addr); // Track which source
-                    entry.1 += bottleneck;
-                }
-            }
+        // Calculate total incoming volume
+        let mut incoming_sum = U256::ZERO;
+        for src_addr in sources.iter() {
+            let (sum, _) = self.window_sum_and_max_with_ephemeral(
+                *src_addr, from_addr, current_block, ephemeral
+            );
+            incoming_sum += sum;
         }
 
-        for (_recv, (sources_set, total_flow)) in receiver_data.iter() {
-            if sources_set.len() >= 2 && *total_flow > self.config.gather_scatter_threshold {
-                println!("Gather-scatter pattern (hub behavior)");
-                return true;
-            }
+        let flow_volume = incoming_sum.min(fan_out_sum);
+        if flow_volume > self.config.gather_scatter_threshold {
+            println!("Gather-scatter pattern detected");
+            return true;
         }
 
         false
@@ -394,7 +373,7 @@ impl AMLMotifDetector {
         block: u64,
     ) -> (bool, bool) {
         // Construct ephemeral “what-if” edge tuple (from, to, &edge)
-        let edge = TransferEdge { amount, block, token };
+        let edge = TransferEdge { amount, block };
         let ephemeral = Some((from, to, &edge));
 
         let suspicious_from = self.check_motifs_from_view_ephemeral(from, block, ephemeral);
@@ -432,7 +411,7 @@ impl AMLMotifDetector {
             true
         } else {
             // Clean → append to overlay; subsequent checks will see it
-            self.overlay.append(from, to, TransferEdge { amount, block, token });
+            self.overlay.append(from, to, TransferEdge { amount, block });
             false
         }
     }
@@ -466,7 +445,7 @@ impl AMLMotifDetector {
                 // Do NOT append; we keep overlay clean
             } else {
                 // Append clean tx so later checks see updated context
-                self.overlay.append(from, to, TransferEdge { amount, block, token });
+                self.overlay.append(from, to, TransferEdge { amount, block });
             }
         }
 
@@ -493,7 +472,7 @@ impl AMLMotifDetector {
             for &(token, from, to, amount) in successful_txs {
                 let (from_idx, _from_created) = self.get_or_add_node(from);
                 let (to_idx,   _to_created)   = self.get_or_add_node(to);
-                let eidx = self.graph.add_edge(from_idx, to_idx, TransferEdge { amount, block, token });
+                let eidx = self.graph.add_edge(from_idx, to_idx, TransferEdge { amount, block });
                 block_edges.push(eidx);
             }
             self.per_block_edges.insert(block, block_edges);
@@ -605,7 +584,7 @@ impl AMLMotifDetector {
                         let eidx = self.graph.add_edge(
                             from_idx,
                             to_idx,
-                            TransferEdge { amount, block, token }
+                            TransferEdge { amount, block }
                         );
                         block_edges.push(eidx);
                     }
@@ -646,7 +625,7 @@ impl AMLMotifDetector {
                         let eidx = self.graph.add_edge(
                             from_idx,
                             to_idx,
-                            TransferEdge { amount, block, token }
+                            TransferEdge { amount, block }
                         );
                         block_edges.push(eidx);
                     }
