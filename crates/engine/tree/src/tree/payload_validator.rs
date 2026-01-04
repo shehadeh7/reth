@@ -609,75 +609,75 @@ where
     ) -> Result<(), ConsensusError> {
 
         // TODO: (ms) Add the AML profile consensus rule check here
-        // let mut aml_evaluator = AML_EVALUATOR
-        //     .get()
-        //     .expect("AML_EVALUATOR not initialized")
-        //     .write()
-        //     .expect("poisoned lock");
-        //
-        // let transactions = block.clone_transactions_recovered().collect::<Vec<_>>();
-        // // TODO: (ms) if transaction didn't execute successfully, dont update the AML profile
-        // // Assumption is that validation is done after block is even executed
-        // // Collect AML-relevant tx info with their original indexes
-        // let aml_txs: Vec<(usize, Address, Address, Address, U256)> = transactions
-        //     .iter()
-        //     .enumerate()
-        //     .zip(output.receipts.iter())
-        //     .filter_map(|((idx, tx), receipt)| {
-        //         // Skip failed transactions
-        //         if !receipt.status() {
-        //             return None;
-        //         }
-        //
-        //         if tx.inner().function_selector() != Some(&Selector::from(hex!("a9059cbb"))) {
-        //             return None;
-        //         }
-        //
-        //         let decoded = transferCall::abi_decode(&tx.input()).ok()?;
-        //         let sender = tx.signer();
-        //         let token = tx.to().unwrap();
-        //
-        //         if !aml_evaluator.supports_aml_interface(token, state) {
-        //             // Contract doesn't support AML, skip validation
-        //             return None;
-        //         }
-        //
-        //         let sender_is_eoa = state
-        //             .account_code(&sender)
-        //             .unwrap_or(None)
-        //             .is_none();
-        //
-        //         let recipient_is_eoa = state
-        //             .account_code(&decoded.to)
-        //             .unwrap_or(None)
-        //             .is_none();
-        //
-        //         // Optional: skip if txs are not between EOAs
-        //         if !sender_is_eoa || !recipient_is_eoa {
-        //             return None;
-        //         }
-        //
-        //         Option::from((idx, token, sender, decoded.to, decoded.amount))
-        //     })
-        //     .collect();
-        //
-        // // Run AML batch check
-        // let aml_inputs = aml_txs.iter().map(|&(_, t, s, r, a)| (t, s, r, a)).collect::<Vec<_>>();
-        // let start = Instant::now();
-        // println!("aml inputs is {:?}", aml_inputs);
-        // let aml_suspicious = aml_evaluator.check_compliance_batch(&aml_inputs, block.number(), block.parent_hash());
-        // let elapsed = start.elapsed();
-        // println!(
-        //     "Check compliance batch took {:?}",
-        //     elapsed,
-        // );
-        //
-        // drop(aml_evaluator); // release lock ASAP
-        //
-        // // We will be ignoring this, instead some external consensus way to decide how to proceed
-        // if aml_suspicious.len() != 0 {
-        //     return Err(ConsensusError::Other("AML consensus failed".to_string()));
-        // }
+        let mut aml_evaluator = AML_EVALUATOR
+            .get()
+            .expect("AML_EVALUATOR not initialized")
+            .write()
+            .expect("poisoned lock");
+
+        let transactions = block.clone_transactions_recovered().collect::<Vec<_>>();
+        // TODO: (ms) if transaction didn't execute successfully, dont update the AML profile
+        // Assumption is that validation is done after block is even executed
+        // Collect AML-relevant tx info with their original indexes
+        let aml_txs: Vec<(usize, Address, Address, Address, U256)> = transactions
+            .iter()
+            .enumerate()
+            .zip(output.receipts.iter())
+            .filter_map(|((idx, tx), receipt)| {
+                // Skip failed transactions
+                if !receipt.status() {
+                    return None;
+                }
+
+                if tx.inner().function_selector() != Some(&Selector::from(hex!("a9059cbb"))) {
+                    return None;
+                }
+
+                let decoded = transferCall::abi_decode(&tx.input()).ok()?;
+                let sender = tx.signer();
+                let token = tx.to().unwrap();
+
+                if !aml_evaluator.supports_aml_interface(token, state) {
+                    // Contract doesn't support AML, skip validation
+                    return None;
+                }
+
+                let sender_is_eoa = state
+                    .account_code(&sender)
+                    .unwrap_or(None)
+                    .is_none();
+
+                let recipient_is_eoa = state
+                    .account_code(&decoded.to)
+                    .unwrap_or(None)
+                    .is_none();
+
+                // Optional: skip if txs are not between EOAs
+                if !sender_is_eoa || !recipient_is_eoa {
+                    return None;
+                }
+
+                Option::from((idx, token, sender, decoded.to, decoded.amount))
+            })
+            .collect();
+
+        // Run AML batch check
+        let aml_inputs = aml_txs.iter().map(|&(_, t, s, r, a)| (t, s, r, a)).collect::<Vec<_>>();
+        let start = Instant::now();
+        println!("aml inputs is {:?}", aml_inputs);
+        let aml_suspicious = aml_evaluator.check_compliance_batch(&aml_inputs, block.number(), block.parent_hash());
+        let elapsed = start.elapsed();
+        println!(
+            "Check compliance batch took {:?}",
+            elapsed,
+        );
+
+        drop(aml_evaluator); // release lock ASAP
+
+        // We will be ignoring this, instead some external consensus way to decide how to proceed
+        if aml_suspicious.len() != 0 {
+            return Err(ConsensusError::Other("AML consensus failed".to_string()));
+        }
 
         Ok(())
     }

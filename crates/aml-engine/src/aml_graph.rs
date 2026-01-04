@@ -466,15 +466,29 @@ impl AMLMotifDetector {
         parent_hash: B256,
         successful_txs: &[(Address, Address, Address, U256)],
     ) {
-        // Add edges for successful transactions (commit once to base graph)
+        // Aggregate transfers between same pairs in this block
         if !successful_txs.is_empty() {
-            let mut block_edges = Vec::new();
+            // Group by (token, from, to) and sum amounts
+            let mut aggregated: FxHashMap<(Address, Address, Address), U256> = FxHashMap::default();
             for &(token, from, to, amount) in successful_txs {
+                aggregated.entry((token, from, to))
+                    .and_modify(|total| *total += amount)
+                    .or_insert(amount);
+            }
+
+            // Create one edge per unique pair with aggregated amount
+            let mut block_edges = Vec::with_capacity(aggregated.len());
+            for ((token, from, to), aggregated_amount) in aggregated {
                 let (from_idx, _from_created) = self.get_or_add_node(from);
                 let (to_idx,   _to_created)   = self.get_or_add_node(to);
-                let eidx = self.graph.add_edge(from_idx, to_idx, TransferEdge { amount, block });
+                let eidx = self.graph.add_edge(
+                    from_idx,
+                    to_idx,
+                    TransferEdge { amount: aggregated_amount, block }
+                );
                 block_edges.push(eidx);
             }
+
             self.per_block_edges.insert(block, block_edges);
             self.block_queue.push_back(block);
         }
@@ -715,11 +729,11 @@ impl AMLMotifDetector {
             self.orphan_node_removal(orphan_candidates);
         }
 
-        println!(
-            "Prune complete: nodes {} -> {}, edges {} -> {}",
-            nodes_before, self.graph.node_count(),
-            edges_before, self.graph.edge_count()
-        );
+        // println!(
+        //     "Prune complete: nodes {} -> {}, edges {} -> {}",
+        //     nodes_before, self.graph.node_count(),
+        //     edges_before, self.graph.edge_count()
+        // );
     }
 
     /// Removes nodes that have no incoming or outgoing edges.
@@ -745,21 +759,38 @@ impl AMLMotifDetector {
     }
 
     pub fn estimate_internal_memory(&self) -> usize {
-        let node_map_size = self.node_map.capacity()
-            * (std::mem::size_of::<Address>() + std::mem::size_of::<NodeIndex>());
-        let graph_nodes = self.graph.node_count() * std::mem::size_of::<Address>();
-        // Edges in petgraph StableGraph store (amount, block) + internal pointers/indices
-        let graph_edges = self.graph.edge_count() * (std::mem::size_of::<(U256, u64)>() + 32);
+        let mut total = 0usize;
 
-        // Overlay rough estimate: edges stored once per sender + once per receiver
-        let overlay_edges = self.overlay.outgoing_pairs.values().map(|v| v.len()).sum::<usize>()
-            + self.overlay.incoming_pairs.values().map(|v| v.len()).sum::<usize>();
-        let overlay_maps = (self.overlay.outgoing_pairs.capacity() + self.overlay.incoming_pairs.capacity())
-            * (std::mem::size_of::<Address>() + std::mem::size_of::<Vec<(Address, TransferEdge)>>());
+        // 1. node_map: HashMap<Address, NodeIndex>
+        total += self.node_map.capacity() * (std::mem::size_of::<Address>() + std::mem::size_of::<NodeIndex>());
 
-        node_map_size + graph_nodes + graph_edges
-            + overlay_edges * std::mem::size_of::<(Address, TransferEdge)>()
-            + overlay_maps
+        // 2. graph nodes and edges using capacity
+        let (node_capacity, edge_capacity) = self.graph.capacity();
+        total += node_capacity * (std::mem::size_of::<Address>() + 2 * std::mem::size_of::<usize>());
+        total += edge_capacity * (std::mem::size_of::<TransferEdge>() + 4 * std::mem::size_of::<usize>());
+
+        // 3. overlay outgoing_pairs: HashMap capacity + all Vec capacities
+        total += self.overlay.outgoing_pairs.capacity() * std::mem::size_of::<Address>();
+        for vec in self.overlay.outgoing_pairs.values() {
+            total += vec.capacity() * std::mem::size_of::<(Address, TransferEdge)>();
+        }
+
+        // 4. overlay incoming_pairs: HashMap capacity + all Vec capacities
+        total += self.overlay.incoming_pairs.capacity() * std::mem::size_of::<Address>();
+        for vec in self.overlay.incoming_pairs.values() {
+            total += vec.capacity() * std::mem::size_of::<(Address, TransferEdge)>();
+        }
+
+        // 5. per_block_edges: HashMap + Vecs
+        total += self.per_block_edges.capacity() * std::mem::size_of::<u64>();
+        for vec in self.per_block_edges.values() {
+            total += vec.capacity() * std::mem::size_of::<EdgeIndex>();
+        }
+
+        // 6. block_queue
+        total += self.block_queue.capacity() * std::mem::size_of::<u64>();
+
+        total
     }
 }
 
