@@ -1,15 +1,21 @@
 use crate::account_profile::{AccountProfile};
 use alloy_primitives::{keccak256, Address, FixedBytes, B256, U256};
 use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::num::NonZeroUsize;
 use std::str::FromStr;
-use std::sync::{OnceLock, RwLock};
+use std::sync::{Mutex, OnceLock, RwLock};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use lru::LruCache;
 use revm_primitives::KECCAK_EMPTY;
 use reth_provider::StateProvider;
 use crate::aml_db::{AccountProfileDb, AmlDb};
 use crate::aml_graph::{AMLMotifDetector, Config};
 use crate::aml_rules::{AmlRule, InboundSumRule, OutboundCountRule, OutboundSumRule};
+use chrono::Local;
+
 
 // 100 * 1e18 = 100000000000000000000
 // pub const MAX_SINGLE_TX_AMOUNT: U256 = U256::from_limbs([
@@ -47,6 +53,140 @@ const MONTHLY_WINDOW_BLOCKS: u64 = 216_000; // ~30 days
 const DAILY_WINDOW_BLOCKS: u64 = 7_200;   // ~1 day at 12s/block
 const WEEKLY_WINDOW_BLOCKS: u64 = 50_400; // ~1 week
 const WINDOWS: &[u64] = &[7200, 50400, 216000];  // daily, weekly, monthly assuming 12s/block
+
+lazy_static::lazy_static! {
+    static ref RUN_TIMESTAMP: String = {
+        let timestamp = Local::now().format("%Y%m%d_%H%M%S").to_string();
+        let path = format!("experiment_logs/{}", timestamp);
+        fs::create_dir_all(&path).expect("Failed to create run directory");
+        timestamp
+    };
+
+    static ref MEMPOOL_LOG: Mutex<std::fs::File> = Mutex::new({
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(format!("experiment_logs/{}/mempool_latency.csv", *RUN_TIMESTAMP))
+            .expect("Failed to open mempool_latency.csv");
+        writeln!(file, "unix_timestamp,block_number,tx_hash,sender,recipient,amount,latency_micros,passed")
+            .expect("Failed to write header");
+        file
+    });
+
+    static ref BLOCK_COMMIT_LOG: Mutex<std::fs::File> = Mutex::new({
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(format!("experiment_logs/{}/block_commit_latency.csv", *RUN_TIMESTAMP))
+            .expect("Failed to open block_commit_latency.csv");
+        writeln!(file, "unix_timestamp,block_number,num_txs,latency_micros")
+            .expect("Failed to write header");
+        file
+    });
+
+    static ref CONSENSUS_VALIDATE_LOG: Mutex<std::fs::File> = Mutex::new({
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(format!("experiment_logs/{}/consensus_validate_latency.csv", *RUN_TIMESTAMP))
+            .expect("Failed to open consensus_validate_latency.csv");
+        writeln!(file, "unix_timestamp,block_number,num_txs,latency_micros")
+            .expect("Failed to write header");
+        file
+    });
+
+    static ref MEMORY_LOG: Mutex<std::fs::File> = Mutex::new({
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(format!("experiment_logs/{}/memory_measurement.csv", *RUN_TIMESTAMP))
+            .expect("Failed to open memory_measurement.csv");
+        writeln!(file, "unix_timestamp,block_number,memory_bytes")
+            .expect("Failed to write header");
+        file
+    });
+}
+
+fn get_unix_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+pub fn log_mempool_check(
+    block_number: u64,
+    tx_hash: B256,
+    sender: Address,
+    recipient: Address,
+    amount: U256,
+    latency_micros: u128,
+    passed: bool,
+) {
+    if let Ok(mut file) = MEMPOOL_LOG.lock() {
+        writeln!(
+            file,
+            "{},{},{:?},{:?},{:?},{},{},{}",
+            get_unix_timestamp(),
+            block_number,
+            tx_hash,
+            sender,
+            recipient,
+            amount,
+            latency_micros,
+            passed
+        ).ok();
+    }
+}
+
+pub fn log_block_commit(
+    block_number: u64,
+    num_txs: usize,
+    latency_micros: u128,
+) {
+    if let Ok(mut file) = BLOCK_COMMIT_LOG.lock() {
+        writeln!(
+            file,
+            "{},{},{},{}",
+            get_unix_timestamp(),
+            block_number,
+            num_txs,
+            latency_micros
+        ).ok();
+    }
+}
+
+pub fn log_consensus_validate(
+    block_number: u64,
+    num_txs: usize,
+    latency_micros: u128,
+) {
+    if let Ok(mut file) = CONSENSUS_VALIDATE_LOG.lock() {
+        writeln!(
+            file,
+            "{},{},{},{}",
+            get_unix_timestamp(),
+            block_number,
+            num_txs,
+            latency_micros
+        ).ok();
+    }
+}
+
+pub fn log_memory_usage(
+    block_number: u64,
+    memory_bytes: usize,
+) {
+    if let Ok(mut file) = MEMORY_LOG.lock() {
+        writeln!(
+            file,
+            "{},{},{}",
+            get_unix_timestamp(),
+            block_number,
+            memory_bytes
+        ).ok();
+    }
+}
 
 
 pub static AML_EVALUATOR: OnceLock<RwLock<AmlEvaluator>> = OnceLock::new();
@@ -111,7 +251,7 @@ impl AmlEvaluator {
         parent_hash: B256,
         successful_txs: &[(Address, Address, Address, U256)]
     ) {
-        println!("successful_txs {:?}", successful_txs.len());
+        // println!("successful_txs {:?}", successful_txs.len());
         self.motif_detector.block_commit(block, parent_hash, successful_txs);
     }
 
@@ -205,6 +345,11 @@ impl AmlEvaluator {
         self.aml_support_cache.insert(contract_address, supports_aml);
 
         supports_aml
+    }
+
+    pub fn measure_memory_overhead(&self, block: u64) {
+        let graph_overhead = self.motif_detector.estimate_internal_memory();
+        log_memory_usage(block, graph_overhead);
     }
 }
 

@@ -51,7 +51,7 @@ use std::{
 };
 use tracing::{debug, debug_span, error, info, instrument, trace, warn};
 use alloy_consensus::{Transaction, TxReceipt};
-use aml_engine::aml::{AML_EVALUATOR};
+use aml_engine::aml::{log_consensus_validate, AML_EVALUATOR};
 use alloy_sol_types::{sol, SolCall};
 sol! {
     function transfer(address to, uint256 amount);
@@ -637,25 +637,25 @@ where
                 let sender = tx.signer();
                 let token = tx.to().unwrap();
 
-                if !aml_evaluator.supports_aml_interface(token, state) {
-                    // Contract doesn't support AML, skip validation
-                    return None;
-                }
-
-                let sender_is_eoa = state
-                    .account_code(&sender)
-                    .unwrap_or(None)
-                    .is_none();
-
-                let recipient_is_eoa = state
-                    .account_code(&decoded.to)
-                    .unwrap_or(None)
-                    .is_none();
-
-                // Optional: skip if txs are not between EOAs
-                if !sender_is_eoa || !recipient_is_eoa {
-                    return None;
-                }
+                // if !aml_evaluator.supports_aml_interface(token, state) {
+                //     // Contract doesn't support AML, skip validation
+                //     return None;
+                // }
+                //
+                // let sender_is_eoa = state
+                //     .account_code(&sender)
+                //     .unwrap_or(None)
+                //     .is_none();
+                //
+                // let recipient_is_eoa = state
+                //     .account_code(&decoded.to)
+                //     .unwrap_or(None)
+                //     .is_none();
+                //
+                // // Optional: skip if txs are not between EOAs
+                // if !sender_is_eoa || !recipient_is_eoa {
+                //     return None;
+                // }
 
                 Option::from((idx, token, sender, decoded.to, decoded.amount))
             })
@@ -664,20 +664,21 @@ where
         // Run AML batch check
         let aml_inputs = aml_txs.iter().map(|&(_, t, s, r, a)| (t, s, r, a)).collect::<Vec<_>>();
         let start = Instant::now();
-        println!("aml inputs is {:?}", aml_inputs);
+        // println!("aml inputs is {:?}", aml_inputs);
         let aml_suspicious = aml_evaluator.check_compliance_batch(&aml_inputs, block.number(), block.parent_hash());
-        let elapsed = start.elapsed();
-        println!(
-            "Check compliance batch took {:?}",
-            elapsed,
-        );
+        let elapsed = start.elapsed().as_micros();
+        log_consensus_validate(block.number(), aml_inputs.len(), elapsed);
+        // println!(
+        //     "Check compliance batch took {:?}",
+        //     elapsed,
+        // );
 
         drop(aml_evaluator); // release lock ASAP
 
         // We will be ignoring this, instead some external consensus way to decide how to proceed
-        if aml_suspicious.len() != 0 {
-            return Err(ConsensusError::Other("AML consensus failed".to_string()));
-        }
+        // if aml_suspicious.len() != 0 {
+        //     return Err(ConsensusError::Other("AML consensus failed".to_string()));
+        // }
 
         Ok(())
     }

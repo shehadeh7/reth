@@ -41,7 +41,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use alloy_sol_types::{sol, SolCall};
 use tracing::{debug, trace, warn};
-use aml_engine::aml::AML_EVALUATOR;
+use aml_engine::aml::{log_mempool_check, AML_EVALUATOR};
 
 mod config;
 pub use config::*;
@@ -334,32 +334,34 @@ where
                     let token_address = pool_tx.to().unwrap();
                     // Check if contract opted into AML
                     // TODO: look into expansion to look into ALL erc20 transfers from transfer logs instead of just EOA
-                    if aml_evaluator.supports_aml_interface(token_address, &state_provider) {
+                    // if aml_evaluator.supports_aml_interface(token_address, &state_provider) {
                         let sender = pool_tx.sender();
                         let recipient = decoded.to;
                         let amount = decoded.amount;
+                        let tx_hash = pool_tx.transaction.hash();
                         // TODO: Decide if we should also limit this to just EOA transfers instead of involving DEXs/Smart contracts?
-                        let sender_is_eoa = state_provider
-                            .account_code(&sender)
-                            .unwrap_or(None)
-                            .is_none();
-
-                        let recipient_is_eoa = state_provider
-                            .account_code(&recipient)
-                            .unwrap_or(None)
-                            .is_none();
+                        // let sender_is_eoa = state_provider
+                        //     .account_code(&sender)
+                        //     .unwrap_or(None)
+                        //     .is_none();
+                        //
+                        // let recipient_is_eoa = state_provider
+                        //     .account_code(&recipient)
+                        //     .unwrap_or(None)
+                        //     .is_none();
 
                         // Optional: skip if txs are not between EOAs
-                        if sender_is_eoa && recipient_is_eoa {
-                            println!("Sender {:?}, recipient {:?}, amount {:?}", sender, recipient, amount);
+                        // if sender_is_eoa && recipient_is_eoa {
+                            // println!("Sender {:?}, recipient {:?}, amount {:?}", sender, recipient, amount);
 
                             let start = Instant::now();
                             let (failed_aml, reason) = aml_evaluator.check_mempool_tx(token_address, sender, recipient, amount, block_number, parent_header.hash());
-                            let elapsed = start.elapsed();
-                            println!(
-                                "AML check_mempool_tx took {:?}",
-                                elapsed,
-                            );
+                            let elapsed = start.elapsed().as_micros();
+                            log_mempool_check(block_number, *tx_hash, sender, recipient, amount, elapsed, !failed_aml);
+                            // println!(
+                            //     "AML check_mempool_tx took {:?}",
+                            //     elapsed,
+                            // );
                             if failed_aml {
                                 print!("Transaction hash {:?} failed", pool_tx.transaction.hash());
                                 best_txs.mark_invalid(
@@ -371,11 +373,11 @@ where
                                 pool.remove_transactions_and_descendants(vec![*pool_tx.hash()]);
                                 return CommitChanges::No; // TODO: Figure out if gas should still be charged for failed AML cases?
                             } else {
-                                println!("AML passed ✅");
+                                // println!("AML passed ✅");
                             }
-                        }
+                        // }
 
-                    }
+                    // }
                 }
             }
 

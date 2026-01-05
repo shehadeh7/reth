@@ -52,7 +52,7 @@ use tokio::sync::{
     oneshot::{self, error::TryRecvError},
 };
 use tracing::*;
-use aml_engine::aml::AML_EVALUATOR;
+use aml_engine::aml::{log_block_commit, AML_EVALUATOR};
 use alloy_sol_types::{sol, SolCall};
 sol! {
     function transfer(address to, uint256 amount);
@@ -2647,24 +2647,24 @@ where
                     let recipient = decoded.to;
                     let amount = decoded.amount;
 
-                    if aml_evaluator.supports_aml_interface(token, &state_provider) != true {
-                        continue;
-                    }
-
-                    let sender_is_eoa = state_provider
-                        .account_code(&sender)
-                        .unwrap_or(None)
-                        .is_none();
-
-                    let recipient_is_eoa = state_provider
-                        .account_code(&recipient)
-                        .unwrap_or(None)
-                        .is_none();
-
-                    // Optional: skip if txs are not between EOAs
-                    if !sender_is_eoa || !recipient_is_eoa {
-                        continue;
-                    }
+                    // if aml_evaluator.supports_aml_interface(token, &state_provider) != true {
+                    //     continue;
+                    // }
+                    //
+                    // let sender_is_eoa = state_provider
+                    //     .account_code(&sender)
+                    //     .unwrap_or(None)
+                    //     .is_none();
+                    //
+                    // let recipient_is_eoa = state_provider
+                    //     .account_code(&recipient)
+                    //     .unwrap_or(None)
+                    //     .is_none();
+                    //
+                    // // Optional: skip if txs are not between EOAs
+                    // if !sender_is_eoa || !recipient_is_eoa {
+                    //     continue;
+                    // }
 
                     if receipt.status() {
                         successful_txs.push((token, sender, recipient, amount));
@@ -2672,18 +2672,21 @@ where
                 }
             }
 
+            let block_number = executed.recovered_block.number();
             let start = Instant::now();
             // Commit block with all transactions and successful indices
             aml_evaluator.update_profiles_batch(
-                executed.recovered_block.number(),
+                block_number,
                 executed.recovered_block.parent_hash(),
                 &successful_txs,
             );
-            let elapsed = start.elapsed();
-            println!(
-                "Block updated profiles batch took {:?}",
-                elapsed,
-            );
+            let elapsed = start.elapsed().as_micros();
+            log_block_commit(block_number, successful_txs.len(), elapsed);
+            aml_evaluator.measure_memory_overhead(block_number);
+            // println!(
+            //     "Block updated profiles batch took {:?}",
+            //     elapsed,
+            // );
         }
 
         // emit insert event
