@@ -3,7 +3,7 @@ use petgraph::Direction::{Incoming};
 use std::collections::{HashMap, HashSet, VecDeque};
 use alloy_primitives::{Address, B256, U256};
 use petgraph::Outgoing;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 /// ---------------------------------------------------------------------------
 /// Public Types
@@ -126,7 +126,7 @@ impl AMLMotifDetector {
     // ------------------------------------------
     /// Addresses connected to `addr` in given direction, merging base graph + overlay (so far)
     fn neighbors_directed_view_addrs(&self, addr: Address, dir: petgraph::Direction) -> Vec<Address> {
-        let mut seen = HashSet::new();
+        let mut seen = FxHashSet::default();
 
         // Base graph neighbors (if node exists)
         if let Some(&nidx) = self.node_map.get(&addr) {
@@ -222,7 +222,7 @@ impl AMLMotifDetector {
         // 1. Fan-in: Multiple distinct senders to one address
         let mut fan_in_count = 0u64;
         let mut fan_in_sum = U256::ZERO;
-        let mut seen = HashSet::new();
+        let mut seen = FxHashSet::default();
 
         // Collect all incoming neighbors (base + overlay), and add ephemeral.from if ephemeral.to == to_addr
         let mut incoming_neighbors = self.neighbors_directed_view_addrs(to_addr, Incoming);
@@ -252,10 +252,10 @@ impl AMLMotifDetector {
 
         // 2. Scatter-gather: single source → multiple intermediaries → to_addr
         // Pattern: One source splits funds through 2+ intermediaries that converge at destination
-        let mut source_data = HashMap::<Address, (HashSet<Address>, U256)>::new();
+        let mut source_data = FxHashMap::<Address, (FxHashSet<Address>, U256)>::default();
 
         // Intermediaries feeding to_addr (base + overlay), plus ephemeral.from if it feeds to_addr
-        let mut intermediaries = HashSet::new();
+        let mut intermediaries = FxHashSet::default();
         for inter_addr in self.neighbors_directed_view_addrs(to_addr, Incoming) {
             intermediaries.insert(inter_addr);
         }
@@ -284,7 +284,7 @@ impl AMLMotifDetector {
                 // Temporal ordering: latest source→inter must be before or at latest inter→dest
                 if src_to_inter_max_block <= inter_to_dest_max_block {
                     let bottleneck = src_to_inter_sum.min(inter_to_dest_sum);
-                    let entry = source_data.entry(src_addr).or_insert((HashSet::new(), U256::ZERO));
+                    let entry = source_data.entry(src_addr).or_insert((FxHashSet::default(), U256::ZERO));
                     entry.0.insert(inter_addr);  // Track intermediary
                     entry.1 += bottleneck;       // Accumulate total from this source
                 }
@@ -522,7 +522,7 @@ impl AMLMotifDetector {
         }
 
         let mut edges_to_remove = Vec::new();
-        let mut orphan_candidates = HashSet::new();
+        let mut orphan_candidates = FxHashSet::default();
 
         for &blk in reverted {
             if let Some(edge_idxs) = self.per_block_edges.remove(&blk) {
@@ -566,7 +566,7 @@ impl AMLMotifDetector {
             blocks_only_in_new.len()
         );
 
-        let mut total_orphan_candidates = HashSet::new();
+        let mut total_orphan_candidates = FxHashSet::default();
 
         // Phase 1: Handle blocks in BOTH old and new (update edges)
         for &block in blocks_in_both {
@@ -696,7 +696,7 @@ impl AMLMotifDetector {
 
         let mut blocks_to_prune = Vec::new();
         let mut edges_to_remove = Vec::new();
-        let mut orphan_candidates = HashSet::new();
+        let mut orphan_candidates = FxHashSet::default();
 
         while let Some(&old) = self.block_queue.front() {
             if current_block - old < self.config.window_blocks {
@@ -738,7 +738,7 @@ impl AMLMotifDetector {
 
     /// Removes nodes that have no incoming or outgoing edges.
     /// Returns the number of nodes removed.
-    fn orphan_node_removal(&mut self, candidates: HashSet<NodeIndex>) -> usize {
+    fn orphan_node_removal(&mut self, candidates: FxHashSet<NodeIndex>) -> usize {
         let mut removed_count = 0;
 
         for node in candidates {
