@@ -32,11 +32,34 @@ pub struct TransferEdge {
 }
 
 #[derive(Default, Clone)]
+struct BlockCaches {
+    /// Base-graph window sums for (a,b) -> (sum, max_block) at current_block.
+    base_pair_sum: FxHashMap<(Address, Address), (U256, u64)>,
+
+    /// Cached neighbors per address (union of base graph + overlay so far).
+    /// These grow incrementally as overlay grows; never shrink during block.
+    neighbors_in: FxHashMap<Address, FxHashSet<Address>>,
+    neighbors_out: FxHashMap<Address, FxHashSet<Address>>,
+}
+
+impl BlockCaches {
+    #[inline]
+    fn clear(&mut self) {
+        self.base_pair_sum.clear();
+        self.neighbors_in.clear();
+        self.neighbors_out.clear();
+    }
+}
+
+#[derive(Default, Clone)]
 struct BlockOverlay {
-    // sender -> [(receiver, edge), ...]
+    // sender -> [(receiver, edge), ...]  (kept for compatibility; not used on fast path)
     outgoing_pairs: FxHashMap<Address, Vec<(Address, TransferEdge)>>,
     // receiver -> [(sender, edge), ...]
     incoming_pairs: FxHashMap<Address, Vec<(Address, TransferEdge)>>,
+    // Fast path: aggregated by (from,to) for O(1) lookup
+    // (sum of amounts within overlay block; max block height of contributions)
+    pair_sum: FxHashMap<(Address, Address), (U256, u64)>,
 }
 
 impl BlockOverlay {
@@ -44,11 +67,17 @@ impl BlockOverlay {
     fn clear(&mut self) {
         self.outgoing_pairs.clear();
         self.incoming_pairs.clear();
+        self.pair_sum.clear();
     }
 
-    /// Append a clean edge to overlay (kept for subsequent tx checks)
     #[inline]
     fn append(&mut self, from: Address, to: Address, edge: TransferEdge) {
+        // Update aggregate
+        let entry = self.pair_sum.entry((from, to)).or_insert((U256::ZERO, 0));
+        entry.0 += edge.amount;
+        entry.1 = entry.1.max(edge.block);
+
+        // Keep detailed per-edge records if needed
         self.outgoing_pairs.entry(from).or_default().push((to, edge.clone()));
         self.incoming_pairs.entry(to).or_default().push((from, edge));
     }
@@ -61,6 +90,11 @@ impl BlockOverlay {
     #[inline]
     fn incoming_slice(&self, to: &Address) -> &[(Address, TransferEdge)] {
         self.incoming_pairs.get(to).map(|v| v.as_slice()).unwrap_or(&[])
+    }
+
+    #[inline]
+    fn overlay_pair(&self, a: Address, b: Address) -> (U256, u64) {
+        self.pair_sum.get(&(a, b)).copied().unwrap_or((U256::ZERO, 0))
     }
 }
 
@@ -81,6 +115,9 @@ pub struct AMLMotifDetector {
 
     // Block-scoped overlay for proposal & consensus validation
     overlay: BlockOverlay,
+
+    // Block-scoped caches for neighbors and base pair sums
+    block_caches: BlockCaches,
 }
 
 impl AMLMotifDetector {
@@ -93,6 +130,7 @@ impl AMLMotifDetector {
             building_block: None,
             config,
             overlay: BlockOverlay::default(),
+            block_caches: BlockCaches::default(),
         }
     }
 
@@ -121,179 +159,222 @@ impl AMLMotifDetector {
         }
     }
 
-    // ------------------------------------------
-    // View helpers: graph + overlay (Address-centric)
-    // ------------------------------------------
-    /// Addresses connected to `addr` in given direction, merging base graph + overlay (so far)
-    fn neighbors_directed_view_addrs(&self, addr: Address, dir: petgraph::Direction) -> Vec<Address> {
-        let mut seen = FxHashSet::default();
+    // ----------------------------------------------------------------------------
+    // Core cache operations (build incrementally, never rebuild within the block)
+    // ----------------------------------------------------------------------------
+    /// Ensure neighbors for addr/dir are cached
+    #[inline]
+    fn ensure_neighbors_cached(&mut self, addr: Address, dir: petgraph::Direction) {
+        let map = match dir {
+            Incoming => &mut self.block_caches.neighbors_in,
+            Outgoing => &mut self.block_caches.neighbors_out,
+        };
+        if map.contains_key(&addr) {
+            return; // Already cached
+        }
 
-        // Base graph neighbors (if node exists)
+        let mut set = FxHashSet::default();
+
+        // Base graph neighbors
         if let Some(&nidx) = self.node_map.get(&addr) {
             for n in self.graph.neighbors_directed(nidx, dir) {
                 if let Some(&a) = self.graph.node_weight(n) {
-                    seen.insert(a);
+                    set.insert(a);
                 }
             }
         }
 
-        // Overlay neighbors
+        // Overlay neighbors (as of now)
         match dir {
             Outgoing => {
                 for (to, _e) in self.overlay.outgoing_slice(&addr) {
-                    seen.insert(*to);
+                    set.insert(*to);
                 }
             }
             Incoming => {
                 for (from, _e) in self.overlay.incoming_slice(&addr) {
-                    seen.insert(*from);
+                    set.insert(*from);
                 }
             }
         }
 
-        seen.into_iter().collect()
+        map.insert(addr, set);
     }
 
-    /// Return base + overlay TransferEdges connecting (a -> b)
-    fn edges_connecting_view_addrs(&self, a: Address, b: Address) -> Vec<TransferEdge> {
-        let mut out = Vec::new();
+    /// Get cached neighbors (ensure_* must be called first!)
+    #[inline]
+    fn get_neighbors_cached(&self, addr: Address, dir: petgraph::Direction) -> &FxHashSet<Address> {
+        let map = match dir {
+            Incoming => &self.block_caches.neighbors_in,
+            Outgoing => &self.block_caches.neighbors_out,
+        };
+        map.get(&addr).expect("neighbors not cached")
+    }
 
-        // Base graph edges (if both nodes exist)
+    /// Update neighbor caches when overlay grows (incremental insert; unconditional)
+    #[inline]
+    fn update_neighbor_cache_for_edge(&mut self, from: Address, to: Address) {
+        self.block_caches.neighbors_out.entry(from).or_default().insert(to);
+        self.block_caches.neighbors_in.entry(to).or_default().insert(from);
+    }
+
+    /// Base-graph window sum (cached per block)
+    #[inline]
+    fn base_pair_sum_cached(&mut self, a: Address, b: Address, current_block: u64) -> (U256, u64) {
+        if let Some(v) = self.block_caches.base_pair_sum.get(&(a, b)) {
+            return *v;
+        }
+
+        let mut sum = U256::ZERO;
+        let mut maxb = 0u64;
+
         if let (Some(&ai), Some(&bi)) = (self.node_map.get(&a), self.node_map.get(&b)) {
             for e in self.graph.edges_connecting(ai, bi) {
-                out.push(e.weight().clone());
-            }
-        }
-
-        // Overlay edges: filter sender==a, receiver==b
-        if let Some(v) = self.overlay.outgoing_pairs.get(&a) {
-            for (to, e) in v {
-                if *to == b {
-                    out.push(e.clone());
+                let w = e.weight();
+                if current_block >= w.block && current_block - w.block < self.config.window_blocks {
+                    sum += w.amount;
+                    maxb = maxb.max(w.block);
                 }
             }
         }
 
-        out
+        let v = (sum, maxb);
+        self.block_caches.base_pair_sum.insert((a, b), v);
+        v
     }
 
-    /// Sum of edges a->b in the window, plus max block, with optional ephemeral “what-if” edge
-    fn window_sum_and_max_with_ephemeral(
-        &self,
+    /// Full window sum: base + overlay + ephemeral
+    #[inline]
+    fn window_sum_full(
+        &mut self,
         a: Address,
         b: Address,
         current_block: u64,
         ephemeral: Option<(Address, Address, &TransferEdge)>,
     ) -> (U256, u64) {
-        let mut sum = U256::ZERO;
-        let mut maxb = 0u64;
+        let (mut sum, mut maxb) = self.base_pair_sum_cached(a, b, current_block);
 
-        // Base + overlay contributions
-        for w in self.edges_connecting_view_addrs(a, b) {
-            if current_block >= w.block && current_block - w.block < self.config.window_blocks {
-                sum += w.amount;
-                maxb = maxb.max(w.block);
-            }
+        // Overlay contribution
+        let (osum, omax) = self.overlay.overlay_pair(a, b);
+        if omax != 0 && current_block >= omax && current_block - omax < self.config.window_blocks {
+            sum += osum;
+            maxb = maxb.max(omax);
         }
 
-        // Ephemeral contribution (if this exact pair)
+        // Ephemeral "what-if"
         if let Some((ea, eb, ew)) = ephemeral {
-            if ea == a && eb == b {
-                if current_block >= ew.block && current_block - ew.block < self.config.window_blocks {
-                    sum += ew.amount;
-                    maxb = maxb.max(ew.block);
-                }
+            if ea == a && eb == b
+                && current_block >= ew.block
+                && current_block - ew.block < self.config.window_blocks
+            {
+                sum += ew.amount;
+                maxb = maxb.max(ew.block);
             }
         }
 
         (sum, maxb)
     }
 
-    // ------------------------------------------
-    // Motif checks (overlay-aware, with ephemeral)
-    // ------------------------------------------
-    /// Receiver-centric motifs: fan-in & scatter-gather
-    fn check_motifs_against_view_ephemeral(
-        &self,
-        to_addr: Address,
-        current_block: u64,
-        ephemeral: Option<(Address, Address, &TransferEdge)>, // (from, to, edge)
-    ) -> bool {
-        // 1. Fan-in: Multiple distinct senders to one address
-        let mut fan_in_count = 0u64;
-        let mut fan_in_sum = U256::ZERO;
-        let mut seen = FxHashSet::default();
+    /// Helper: copy neighbors into a local Vec and inject ephemeral neighbor (borrow-safe)
+    #[inline]
+    fn neighbors_to_vec_with_ephemeral(
+        &mut self,
+        addr: Address,
+        dir: petgraph::Direction,
+        ephemeral: Option<(Address, Address, &TransferEdge)>,
+        out: &mut Vec<Address>,
+    ) {
+        self.ensure_neighbors_cached(addr, dir);
+        out.clear();
+        let cached = self.get_neighbors_cached(addr, dir);
+        out.reserve(cached.len().saturating_sub(out.capacity()));
+        out.extend(cached.iter().copied());
 
-        // Collect all incoming neighbors (base + overlay), and add ephemeral.from if ephemeral.to == to_addr
-        let mut incoming_neighbors = self.neighbors_directed_view_addrs(to_addr, Incoming);
-        if let Some((efrom, eto, _ew)) = ephemeral {
-            if eto == to_addr && !incoming_neighbors.contains(&efrom) {
-                incoming_neighbors.push(efrom);
+        if let Some((efrom, eto, _)) = ephemeral {
+            match dir {
+                Incoming if eto == addr => {
+                    if !out.contains(&efrom) {
+                        out.push(efrom);
+                    }
+                }
+                Outgoing if efrom == addr => {
+                    if !out.contains(&eto) {
+                        out.push(eto);
+                    }
+                }
+                _ => {}
             }
         }
+    }
 
-        for src_addr in incoming_neighbors {
-            if !seen.insert(src_addr) {
-                continue;
-            }
+    // ----------------------------------------------------------------------------
+    // Motif checks using cached neighbors
+    // ----------------------------------------------------------------------------
+    /// Receiver-centric motifs: fan-in & scatter-gather
+    fn check_motifs_against_view_ephemeral(
+        &mut self,
+        to_addr: Address,
+        current_block: u64,
+        ephemeral: Option<(Address, Address, &TransferEdge)>,
+    ) -> bool {
+        // 1) FAN-IN
+        let mut sources = Vec::new();
+        self.neighbors_to_vec_with_ephemeral(to_addr, Incoming, ephemeral, &mut sources);
+
+        let mut fan_in_count = 0u64;
+        let mut fan_in_sum = U256::ZERO;
+
+        for src_addr in sources.into_iter() {
             let (neighbor_total, _maxb) =
-                self.window_sum_and_max_with_ephemeral(src_addr, to_addr, current_block, ephemeral);
+                self.window_sum_full(src_addr, to_addr, current_block, ephemeral);
             if neighbor_total > U256::ZERO {
                 fan_in_count += 1;
                 fan_in_sum += neighbor_total;
                 if fan_in_count > self.config.fan_in_count_threshold
                     || fan_in_sum > self.config.fan_in_sum_threshold
                 {
-                    println!("Fan_in_count or fan_in_sum exceeded");
                     return true;
                 }
             }
         }
 
-        // 2. Scatter-gather: single source → multiple intermediaries → to_addr
-        // Pattern: One source splits funds through 2+ intermediaries that converge at destination
-        let mut source_data = FxHashMap::<Address, (FxHashSet<Address>, U256)>::default();
+        // 2) SCATTER-GATHER
+        let mut intermediaries = Vec::new();
+        self.neighbors_to_vec_with_ephemeral(to_addr, Incoming, ephemeral, &mut intermediaries);
 
-        // Intermediaries feeding to_addr (base + overlay), plus ephemeral.from if it feeds to_addr
-        let mut intermediaries = FxHashSet::default();
-        for inter_addr in self.neighbors_directed_view_addrs(to_addr, Incoming) {
-            intermediaries.insert(inter_addr);
-        }
-        if let Some((efrom, eto, _ew)) = ephemeral {
-            if eto == to_addr {
-                intermediaries.insert(efrom);
-            }
-        }
+        let mut source_data: FxHashMap<Address, (FxHashSet<Address>, U256)> = FxHashMap::default();
 
-        for inter_addr in intermediaries {
-            let (inter_to_dest_sum, inter_to_dest_max_block) =
-                self.window_sum_and_max_with_ephemeral(inter_addr, to_addr, current_block, ephemeral);
+        for inter_addr in intermediaries.into_iter() {
+            let (inter_to_dest_sum, inter_to_dest_max) =
+                self.window_sum_full(inter_addr, to_addr, current_block, ephemeral);
             if inter_to_dest_sum == U256::ZERO {
                 continue;
             }
 
-            // Sources feeding intermediary
-            let sources_into_inter = self.neighbors_directed_view_addrs(inter_addr, Incoming);
-            for src_addr in sources_into_inter {
-                let (src_to_inter_sum, src_to_inter_max_block) =
-                    self.window_sum_and_max_with_ephemeral(src_addr, inter_addr, current_block, ephemeral);
+            let mut srcs = Vec::new();
+            self.neighbors_to_vec_with_ephemeral(inter_addr, Incoming, None, &mut srcs);
+
+            for src_addr in srcs.into_iter() {
+                let (src_to_inter_sum, src_to_inter_max) =
+                    self.window_sum_full(src_addr, inter_addr, current_block, ephemeral);
                 if src_to_inter_sum == U256::ZERO {
                     continue;
                 }
 
-                // Temporal ordering: latest source→inter must be before or at latest inter→dest
-                if src_to_inter_max_block <= inter_to_dest_max_block {
+                // Temporal ordering
+                if src_to_inter_max <= inter_to_dest_max {
                     let bottleneck = src_to_inter_sum.min(inter_to_dest_sum);
-                    let entry = source_data.entry(src_addr).or_insert((FxHashSet::default(), U256::ZERO));
-                    entry.0.insert(inter_addr);  // Track intermediary
-                    entry.1 += bottleneck;       // Accumulate total from this source
+                    let entry = source_data
+                        .entry(src_addr)
+                        .or_insert((FxHashSet::default(), U256::ZERO));
+                    entry.0.insert(inter_addr);
+                    entry.1 += bottleneck;
                 }
             }
         }
 
-        for (_src, (inter_set, total_flow)) in source_data.iter() {
-            if inter_set.len() >= 2 && *total_flow > self.config.scatter_gather_threshold {
-                println!("Scatter-gather pattern");
+        for (_src, (inter_set, total_flow)) in source_data.into_iter() {
+            if inter_set.len() >= 2 && total_flow > self.config.scatter_gather_threshold {
                 return true;
             }
         }
@@ -303,90 +384,73 @@ impl AMLMotifDetector {
 
     /// Sender-centric motifs: fan-out & gather-scatter (hub behavior)
     fn check_motifs_from_view_ephemeral(
-        &self,
+        &mut self,
         from_addr: Address,
         current_block: u64,
-        ephemeral: Option<(Address, Address, &TransferEdge)>, // (from, to, edge)
+        ephemeral: Option<(Address, Address, &TransferEdge)>,
     ) -> bool {
-        // 1. Fan-Out (Dispersal): Single sender → multiple distinct receivers
+        // 1) FAN-OUT
+        let mut destinations = Vec::new();
+        self.neighbors_to_vec_with_ephemeral(from_addr, Outgoing, ephemeral, &mut destinations);
+
         let mut fan_out_count = 0u64;
         let mut fan_out_sum = U256::ZERO;
-        let mut seen = HashSet::new();
 
-        // Outgoing neighbors (base + overlay), add ephemeral.to if ephemeral.from == from_addr
-        let mut outgoing_neighbors = self.neighbors_directed_view_addrs(from_addr, Outgoing);
-        if let Some((efrom, eto, _ew)) = ephemeral {
-            if efrom == from_addr && !outgoing_neighbors.contains(&eto) {
-                outgoing_neighbors.push(eto);
-            }
-        }
-
-        for recv_addr in &outgoing_neighbors {
-            if !seen.insert(recv_addr) {
-                continue;
-            }
+        for recv_addr in destinations.into_iter() {
             let (neighbor_total, _maxb) =
-                self.window_sum_and_max_with_ephemeral(from_addr, *recv_addr, current_block, ephemeral);
+                self.window_sum_full(from_addr, recv_addr, current_block, ephemeral);
             if neighbor_total > U256::ZERO {
                 fan_out_count += 1;
                 fan_out_sum += neighbor_total;
                 if fan_out_count > self.config.fan_out_count_threshold
                     || fan_out_sum > self.config.fan_out_sum_threshold
                 {
-                    println!("Fan-out count or sum exceeded");
                     return true;
                 }
             }
         }
 
-        // 2. Gather-scatter (hub): multiple sources → from_addr → receiver
-        // Gather-scatter: Check if this transaction is part of active mixing
-        let sources = self.neighbors_directed_view_addrs(from_addr, Incoming);
+        // 2) GATHER-SCATTER (hub): multiple sources → from_addr → one receiver
+        let mut sources = Vec::new();
+        self.neighbors_to_vec_with_ephemeral(from_addr, Incoming, ephemeral, &mut sources);
 
-        // Calculate total incoming volume
         let mut incoming_sum = U256::ZERO;
-        for src_addr in sources.iter() {
-            let (sum, _) = self.window_sum_and_max_with_ephemeral(
-                *src_addr, from_addr, current_block, ephemeral
-            );
+        for src_addr in sources.into_iter() {
+            let (sum, _maxb) = self.window_sum_full(src_addr, from_addr, current_block, ephemeral);
             incoming_sum += sum;
         }
 
         let flow_volume = incoming_sum.min(fan_out_sum);
         if flow_volume > self.config.gather_scatter_threshold {
-            println!("Gather-scatter pattern detected");
             return true;
         }
 
         false
     }
 
-    // ------------------------------------------
+    // ----------------------------------------------------------------------------
     // “Would this tx be suspicious?” (evaluate-first, no mutation)
-    // ------------------------------------------
+    // ----------------------------------------------------------------------------
     fn would_be_suspicious(
-        &self,
-        token: Address,
+        &mut self,
+        _token: Address,
         from: Address,
         to: Address,
         amount: U256,
         block: u64,
     ) -> (bool, bool) {
-        // Construct ephemeral “what-if” edge tuple (from, to, &edge)
         let edge = TransferEdge { amount, block };
         let ephemeral = Some((from, to, &edge));
-
         let suspicious_from = self.check_motifs_from_view_ephemeral(from, block, ephemeral);
-        let suspicious_to   = self.check_motifs_against_view_ephemeral(to, block, ephemeral);
-
+        let suspicious_to = self.check_motifs_against_view_ephemeral(to, block, ephemeral);
         (suspicious_from, suspicious_to)
     }
 
-    // ------------------------------------------
+    // ----------------------------------------------------------------------------
     // BLOCK BUILDING: Proposer checks each tx during selection
-    // ------------------------------------------
+    // ----------------------------------------------------------------------------
     /// Returns `true` if the tx is suspicious and should be excluded.
-    /// If clean, we append it to the overlay so later txs see updated context.
+    /// If clean, we append it to the overlay and update caches so later txs see updated context.
     pub fn proposer_check_tx(
         &mut self,
         from: Address,
@@ -396,91 +460,81 @@ impl AMLMotifDetector {
         block: u64,
         parent_hash: B256,
     ) -> bool {
-        // Start/continue overlay for the current block build
+        // Start/continue block-scoped caches
         if self.building_block != Some((block, parent_hash)) {
+            self.block_caches.clear();
             self.overlay.clear();
-            self.reset_block_building(); // clears builder markers & building_block
             self.building_block = Some((block, parent_hash));
         }
 
-        // Evaluate against base graph + overlay (so far), with ephemeral current tx
-        let (suspicious_from, suspicious_to) = self.would_be_suspicious(token, from, to, amount, block);
-
+        let (suspicious_from, suspicious_to) =
+            self.would_be_suspicious(token, from, to, amount, block);
         if suspicious_from || suspicious_to {
-            // Suspicious → do NOT append; exclude
             true
         } else {
-            // Clean → append to overlay; subsequent checks will see it
+            // Clean: append to overlay & update neighbor caches
             self.overlay.append(from, to, TransferEdge { amount, block });
+            self.update_neighbor_cache_for_edge(from, to);
             false
         }
     }
 
-    // ------------------------------------------
+    // ----------------------------------------------------------------------------
     // CONSENSUS VALIDATION: Validators check complete blocks
-    // ------------------------------------------
+    // ----------------------------------------------------------------------------
     /// Returns vector of illicit tx indices. Clean txs get appended to overlay incrementally.
     pub fn consensus_validate_block(
         &mut self,
-        txs: &[(Address, Address, Address, U256)], // token, sender, receiver, amount
+        txs: &[ (Address, Address, Address, U256) ], // token, sender, receiver, amount
         block: u64,
         parent_hash: B256,
     ) -> Vec<usize> {
-        let is_self_built = self
-            .building_block
-            .as_ref()
-            .map(|(b, p)| *b == block && *p == parent_hash)
-            .unwrap_or(false);
-
+        self.block_caches.clear();
         self.overlay.clear();
 
         let mut illicit_indices = Vec::new();
 
         for (idx, &(token, from, to, amount)) in txs.iter().enumerate() {
-            // Evaluate (no mutation)
-            let (suspicious_from, suspicious_to) = self.would_be_suspicious(token, from, to, amount, block);
-
+            let (suspicious_from, suspicious_to) =
+                self.would_be_suspicious(token, from, to, amount, block);
             if suspicious_from || suspicious_to {
                 illicit_indices.push(idx);
-                // Do NOT append; we keep overlay clean
             } else {
-                // Append clean tx so later checks see updated context
                 self.overlay.append(from, to, TransferEdge { amount, block });
+                self.update_neighbor_cache_for_edge(from, to);
             }
         }
 
-        // Clear overlay
+        self.block_caches.clear();
         self.overlay.clear();
-
         illicit_indices
     }
 
-    // ------------------------------------------
+    // ----------------------------------------------------------------------------
     // BLOCK COMMIT
-    // ------------------------------------------
+    // ----------------------------------------------------------------------------
     /// Called after a block is successfully committed.
     /// successful_txs: all successful transactions in block (in order)
     pub fn block_commit(
         &mut self,
         block: u64,
-        parent_hash: B256,
-        successful_txs: &[(Address, Address, Address, U256)],
+        _parent_hash: B256,
+        successful_txs: &[ (Address, Address, Address, U256) ],
     ) {
         // Aggregate transfers between same pairs in this block
         if !successful_txs.is_empty() {
-            // Group by (token, from, to) and sum amounts
             let mut aggregated: FxHashMap<(Address, Address, Address), U256> = FxHashMap::default();
             for &(token, from, to, amount) in successful_txs {
-                aggregated.entry((token, from, to))
+                aggregated
+                    .entry((token, from, to))
                     .and_modify(|total| *total += amount)
                     .or_insert(amount);
             }
 
-            // Create one edge per unique pair with aggregated amount
             let mut block_edges = Vec::with_capacity(aggregated.len());
-            for ((token, from, to), aggregated_amount) in aggregated {
-                let (from_idx, _from_created) = self.get_or_add_node(from);
-                let (to_idx,   _to_created)   = self.get_or_add_node(to);
+            for ((_token, from, to), aggregated_amount) in aggregated {
+                let (from_idx, _) = self.get_or_add_node(from);
+                let (to_idx, _) = self.get_or_add_node(to);
                 let eidx = self.graph.add_edge(
                     from_idx,
                     to_idx,
@@ -488,25 +542,24 @@ impl AMLMotifDetector {
                 );
                 block_edges.push(eidx);
             }
-
             self.per_block_edges.insert(block, block_edges);
             self.block_queue.push_back(block);
         }
 
-        // Clear overlay + building state
         self.overlay.clear();
         self.building_block = None;
-
+        self.block_caches.clear();
         self.prune(block);
     }
 
-    // ------------------------------------------
+    // ----------------------------------------------------------------------------
     // BLOCK BUILDING RESET
-    // ------------------------------------------
+    // ----------------------------------------------------------------------------
     /// Called when block building is abandoned.
     pub fn reset_block_building(&mut self) {
         self.overlay.clear();
         self.building_block = None;
+        self.block_caches.clear();
     }
 
     // ------------------------------------------
@@ -780,6 +833,11 @@ impl AMLMotifDetector {
         for vec in self.overlay.incoming_pairs.values() {
             total += vec.capacity() * std::mem::size_of::<(Address, TransferEdge)>();
         }
+        total += self.overlay.pair_sum.capacity() * (
+            std::mem::size_of::<(Address, Address)>() +  // key: (from, to)
+                std::mem::size_of::<(U256, u64)>() +          // value: (sum, max_block)
+                std::mem::size_of::<usize>()                  // hash bucket overhead
+        );
 
         // 5. per_block_edges: HashMap + Vecs
         total += self.per_block_edges.capacity() * std::mem::size_of::<u64>();
@@ -789,6 +847,37 @@ impl AMLMotifDetector {
 
         // 6. block_queue
         total += self.block_queue.capacity() * std::mem::size_of::<u64>();
+
+        // 8. block_caches.base_pair_sum: (Address, Address) -> (U256, u64)
+        total += self.block_caches.base_pair_sum.capacity() * (
+            std::mem::size_of::<(Address, Address)>() +   // key: 40 bytes
+                std::mem::size_of::<(U256, u64)>() +          // value: 40 bytes
+                std::mem::size_of::<usize>()                  // hash bucket overhead: 8 bytes
+        );
+
+        // 9. block_caches.neighbors_in: Address -> FxHashSet<Address>
+        total += self.block_caches.neighbors_in.capacity() * (
+            std::mem::size_of::<Address>() +              // key: 20 bytes
+                std::mem::size_of::<usize>() * 3              // HashSet overhead (ptr, cap, len): 24 bytes
+        );
+        for neighbor_set in self.block_caches.neighbors_in.values() {
+            total += neighbor_set.capacity() * (
+                std::mem::size_of::<Address>() +          // Address: 20 bytes
+                    std::mem::size_of::<usize>()              // hash bucket: 8 bytes
+            );
+        }
+
+        // 10. block_caches.neighbors_out: Address -> FxHashSet<Address>
+        total += self.block_caches.neighbors_out.capacity() * (
+            std::mem::size_of::<Address>() +              // key: 20 bytes
+                std::mem::size_of::<usize>() * 3              // HashSet overhead: 24 bytes
+        );
+        for neighbor_set in self.block_caches.neighbors_out.values() {
+            total += neighbor_set.capacity() * (
+                std::mem::size_of::<Address>() +          // Address: 20 bytes
+                    std::mem::size_of::<usize>()              // hash bucket: 8 bytes
+            );
+        }
 
         total
     }
