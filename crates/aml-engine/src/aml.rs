@@ -126,13 +126,9 @@ pub fn log_mempool_check(
     if let Ok(mut file) = MEMPOOL_LOG.lock() {
         writeln!(
             file,
-            "{},{},{:?},{:?},{:?},{},{},{}",
+            "{},{},{},{}",
             get_unix_timestamp(),
             block_number,
-            tx_hash,
-            sender,
-            recipient,
-            amount,
             latency_micros,
             passed
         ).ok();
