@@ -553,7 +553,7 @@ pub trait EthTransactions: LoadTransaction<Provider: BlockReaderIdExt> {
             let blocks_processed = transactions_by_block.len();
             let mut total_txs = 0;
             let mut all_hashes = Vec::new();
-            let mut current_chain_height = self.provider().last_block_number().unwrap_or(0);
+            let mut current_chain_height = self.provider().best_block_number().unwrap_or(0);
 
             info!("Pre-decoding all transactions...");
             let mut batches_prepared = Vec::new();
@@ -718,6 +718,7 @@ pub trait EthTransactions: LoadTransaction<Provider: BlockReaderIdExt> {
 
                     aml_evaluator.block_number
                 }; // Guard dropped here
+                info!("Best is {}, target height: {}", best, target_height);
 
                 if best >= target_height {
                     return Ok(best);
