@@ -9,17 +9,22 @@ use crate::{
 };
 use alloy_consensus::{
     transaction::{SignerRecoverable, TransactionMeta, TxHashRef},
-    BlockHeader, Transaction,
+    BlockHeader, Transaction, TxEnvelope,
 };
 use alloy_dyn_abi::TypedData;
 use alloy_eips::{eip2718::Encodable2718, BlockId};
-use alloy_network::{TransactionBuilder, TransactionBuilder4844};
-use alloy_primitives::{Address, Bytes, TxHash, B256, U256};
-use alloy_rpc_types_eth::{BlockNumberOrTag, TransactionInfo};
+use alloy_network::{Ethereum, EthereumWallet, TransactionBuilder, TransactionBuilder4844};
+use alloy_primitives::{hex, Address, Bytes, TxHash, TxKind, B256, U256};
+use alloy_rpc_types_eth::{
+    BlockNumberOrTag, TransactionInfo, TransactionInput, TransactionRequest,
+};
 use futures::{Future, StreamExt};
+use jsonrpsee::core::Serialize;
 use reth_chain_state::CanonStateSubscriptions;
 use reth_node_api::BlockBody;
-use reth_primitives_traits::{Recovered, RecoveredBlock, SignedTransaction, TxTy, WithEncoded};
+use reth_primitives_traits::{
+    NodePrimitives, Recovered, RecoveredBlock, SignedTransaction, TxTy, WithEncoded,
+};
 use reth_rpc_convert::{transaction::RpcConvert, RpcTxReq, TransactionConversionError};
 use reth_rpc_eth_types::{
     utils::{binary_search, recover_raw_transaction},
@@ -31,9 +36,16 @@ use reth_storage_api::{
     TransactionsProvider,
 };
 use reth_transaction_pool::{
-    AddedTransactionOutcome, PoolPooledTx, PoolTransaction, TransactionOrigin, TransactionPool,
+    AddedTransactionOutcome, EthPooledTransaction, PoolPooledTx, PoolTransaction,
+    TransactionOrigin, TransactionPool,
 };
+use serde::Deserialize;
+use std::collections::{BTreeMap, HashMap};
+use std::hash::Hash;
+use std::str::FromStr;
 use std::{sync::Arc, time::Duration};
+use tracing::{info, warn};
+use aml_engine::aml::{AML_EVALUATOR};
 
 /// Transaction related functions for the [`EthApiServer`](crate::EthApiServer) trait in
 /// the `eth_` namespace.
@@ -57,6 +69,36 @@ use std::{sync::Arc, time::Duration};
 /// See also <https://github.com/paradigmxyz/reth/issues/6240>
 ///
 /// This implementation follows the behaviour of Geth and disables the basefee check for tracing.
+///
+///
+
+#[derive(Debug, Deserialize)]
+struct CsvRecord {
+    block_number: u64,
+    raw_tx: String, // Hex-encoded signed transaction (with or without 0x prefix)
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct LoadTestResult {
+    pub total_transactions: usize,
+    pub blocks_processed: usize,
+    pub transaction_hashes: Vec<B256>,
+}
+
+#[cfg(feature = "sol-types")]
+alloy_sol_types::sol! {
+    function transfer(address to, uint256 amount) external returns (bool);
+}
+
+// ============================================================================
+// Helper Functions (OUTSIDE the trait impl)
+// ============================================================================
+
+fn parse_hex_bytes(s: &str) -> Result<Bytes, String> {
+    let s = s.trim().strip_prefix("0x").unwrap_or(s);
+    hex::decode(s).map(|v| v.into()).map_err(|e| format!("invalid hex: {}", e))
+}
+
 pub trait EthTransactions: LoadTransaction<Provider: BlockReaderIdExt> {
     /// Returns a handle for signing data.
     ///
@@ -109,8 +151,8 @@ pub trait EthTransactions: LoadTransaction<Provider: BlockReaderIdExt> {
                 while let Some(notification) = stream.next().await {
                     let chain = notification.committed();
                     for block in chain.blocks_iter() {
-                        if block.body().contains_transaction(&hash) &&
-                            let Some(receipt) = this.transaction_receipt(hash).await?
+                        if block.body().contains_transaction(&hash)
+                            && let Some(receipt) = this.transaction_receipt(hash).await?
                         {
                             return Ok(receipt);
                         }
@@ -180,7 +222,7 @@ pub trait EthTransactions: LoadTransaction<Provider: BlockReaderIdExt> {
             if let Some(tx) =
                 self.pool().get_pooled_transaction_element(hash).map(|tx| tx.encoded_2718().into())
             {
-                return Ok(Some(tx))
+                return Ok(Some(tx));
             }
 
             self.spawn_blocking_io(move |ref this| {
@@ -291,7 +333,7 @@ pub trait EthTransactions: LoadTransaction<Provider: BlockReaderIdExt> {
 
                     return Ok(Some(
                         self.converter().fill(tx.clone().with_signer(*signer), tx_info)?,
-                    ))
+                    ));
                 }
             }
 
@@ -311,8 +353,8 @@ pub trait EthTransactions: LoadTransaction<Provider: BlockReaderIdExt> {
     {
         async move {
             // Check the pool first
-            if include_pending &&
-                let Some(tx) =
+            if include_pending
+                && let Some(tx) =
                     RpcNodeCore::pool(self).get_transaction_by_sender_and_nonce(sender, nonce)
             {
                 let transaction = tx.transaction.clone_into_consensus();
@@ -384,10 +426,10 @@ pub trait EthTransactions: LoadTransaction<Provider: BlockReaderIdExt> {
         Self: LoadBlock,
     {
         async move {
-            if let Some(block) = self.recovered_block(block_id).await? &&
-                let Some(tx) = block.body().transactions().get(index)
+            if let Some(block) = self.recovered_block(block_id).await?
+                && let Some(tx) = block.body().transactions().get(index)
             {
-                return Ok(Some(tx.encoded_2718().into()))
+                return Ok(Some(tx.encoded_2718().into()));
             }
 
             Ok(None)
@@ -410,7 +452,7 @@ pub trait EthTransactions: LoadTransaction<Provider: BlockReaderIdExt> {
             };
 
             if self.find_signer(&from).is_err() {
-                return Err(SignError::NoAccount.into_eth_err())
+                return Err(SignError::NoAccount.into_eth_err());
             }
 
             // set nonce if not already set before
@@ -448,6 +490,252 @@ pub trait EthTransactions: LoadTransaction<Provider: BlockReaderIdExt> {
         }
     }
 
+    /// Signs transaction with a matching signer, if any and submits the transaction to the pool.
+    /// Returns the hash of the signed transaction.
+    fn send_transactions_batch(
+        &self,
+        requests: Vec<Bytes>,
+    ) -> impl Future<Output = Result<Vec<B256>, Self::Error>> + Send
+    where
+        Self: EthApiSpec + LoadBlock + EstimateCall,
+    {
+        async move {
+            let mut pool_transactions = Vec::with_capacity(requests.len());
+            let mut hashes = Vec::with_capacity(requests.len());
+
+            for raw_tx_bytes in requests {
+                // 1. Decode the RLP bytes into a Signed Transaction
+                // Assuming raw_tx_bytes is the `Bytes` from the JSON-RPC call
+                type SignedTx<T> = <<T as RpcNodeCore>::Primitives as NodePrimitives>::SignedTx;
+
+                // 2. Recover specifically into the Node's SignedTx type
+                // This performs RLP decoding AND ecrecover
+                let recovered = recover_raw_transaction::<SignedTx<Self>>(&raw_tx_bytes)?;
+
+                // 3. Convert the Consensus type (SignedTx) into the Pooled type
+                // This is where the decoupled types are mapped together
+                let pool_transaction = <<Self as RpcNodeCore>::Pool as TransactionPool>::Transaction::try_from_consensus(
+                    recovered,
+                ).map_err(|e| {
+                    Self::Error::from_eth_err(TransactionConversionError::Other(e.to_string()))
+                })?;
+
+                pool_transactions.push(pool_transaction);
+            }
+
+            // 4. Submit to the pool as 'External' or 'Local'
+            // Since these come via RPC, 'Local' is appropriate for immediate priority
+            let outcomes =
+                self.pool().add_transactions(TransactionOrigin::Local, pool_transactions).await;
+
+            for outcome in outcomes {
+                match outcome {
+                    Ok(added) => hashes.push(added.hash),
+                    Err(e) => eprintln!("Failed to add transaction: {:?}", e),
+                }
+            }
+
+            Ok(hashes)
+        }
+    }
+
+    fn load_test_from_csv(
+        &self,
+        csv_path: String,
+    ) -> impl Future<Output = Result<LoadTestResult, Self::Error>> + Send
+    where
+        Self: EthApiSpec + LoadBlock + EstimateCall,
+    {
+        async move {
+            // 1. Read and parse CSV
+            let transactions_by_block = self.read_csv_file(&csv_path)?;
+            info!("Loaded {} target blocks from CSV", transactions_by_block.len());
+            let blocks_processed = transactions_by_block.len();
+            let mut total_txs = 0;
+            let mut all_hashes = Vec::new();
+            let mut current_chain_height = self.provider().last_block_number().unwrap_or(0);
+
+            info!("Pre-decoding all transactions...");
+            let mut batches_prepared = Vec::new();
+
+            for (csv_block_num, records) in transactions_by_block {
+                let (pool_transactions, batch_hashes) = self.decode_transactions(records)?;
+                batches_prepared.push((csv_block_num, pool_transactions, batch_hashes));
+            }
+
+            info!("All {} batches pre-decoded and ready", batches_prepared.len());
+
+            // 2. Process each block batch
+            for (csv_block_num, pool_transactions, batch_hashes) in batches_prepared {
+                info!("CSV Block {}: Submitting {} transactions", csv_block_num, pool_transactions.len());
+
+                // Submit to pool IMMEDIATELY
+                let outcomes = self.pool()
+                    .add_transactions(TransactionOrigin::Local, pool_transactions)
+                    .await;
+
+                let success_count = outcomes.iter().filter(|o| o.is_ok()).count();
+                total_txs += success_count;
+
+                // Track successful transaction hashes
+                for (idx, outcome) in outcomes.iter().enumerate() {
+                    if outcome.is_ok() {
+                        all_hashes.push(batch_hashes[idx]);
+                    }
+                }
+
+                info!("Batch submitted: {}/{} transactions accepted", success_count, outcomes.len());
+
+                // Wait for block production (transactions are already in pool, waiting for next block to mine them)
+                current_chain_height = self.wait_for_next_block(current_chain_height).await?;
+
+                // Small delay before next batch
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+
+            Ok(LoadTestResult {
+                total_transactions: total_txs,
+                blocks_processed,
+                transaction_hashes: all_hashes,
+            })
+        }
+    }
+
+    async fn load_test_from_csv_bulk(
+        &self,
+        csv_path: String,
+    ) -> Result<LoadTestResult, Self::Error> {
+        // Read all transactions
+        let transactions_by_block = self.read_csv_file(&csv_path)?;
+
+        // Flatten all transactions into one big batch
+        let all_records: Vec<CsvRecord> =
+            transactions_by_block.into_iter().flat_map(|(_, records)| records).collect();
+
+        info!("Loading {} transactions in bulk", all_records.len());
+
+        let (pool_transactions, batch_hashes) = self.decode_transactions(all_records)?;
+
+        // Submit everything at once
+        let outcomes =
+            self.pool().add_transactions(TransactionOrigin::Local, pool_transactions).await;
+
+        let success_count = outcomes.iter().filter(|o| o.is_ok()).count();
+
+        // Track successful transaction hashes
+        let mut successful_hashes = Vec::new();
+        for (idx, outcome) in outcomes.iter().enumerate() {
+            if outcome.is_ok() {
+                successful_hashes.push(batch_hashes[idx]);
+            }
+        }
+
+        info!(
+            "Bulk injection complete: {}/{} transactions accepted",
+            success_count,
+            outcomes.len()
+        );
+
+        Ok(LoadTestResult {
+            total_transactions: success_count,
+            blocks_processed: 1, // All in one go
+            transaction_hashes: successful_hashes,
+        })
+    }
+
+    /// Build a batch of signed transactions from CSV records
+    fn read_csv_file(&self, csv_path: &str) -> Result<BTreeMap<u64, Vec<CsvRecord>>, Self::Error> {
+        let mut reader = csv::Reader::from_path(csv_path).map_err(|e| {
+            Self::Error::from_eth_err(TransactionConversionError::Other(e.to_string()))
+        })?;
+
+        let mut transactions_by_block: BTreeMap<u64, Vec<CsvRecord>> = BTreeMap::new();
+
+        for result in reader.deserialize() {
+            let record: CsvRecord = result.map_err(|e| {
+                Self::Error::from_eth_err(TransactionConversionError::Other(e.to_string()))
+            })?;
+
+            transactions_by_block.entry(record.block_number).or_default().push(record);
+        }
+
+        Ok(transactions_by_block)
+    }
+
+    fn decode_transactions(
+        &self,
+        records: Vec<CsvRecord>,
+    ) -> Result<(Vec<<Self::Pool as TransactionPool>::Transaction>, Vec<B256>), Self::Error> {
+        let mut pool_transactions = Vec::with_capacity(records.len());
+        let mut hashes = Vec::with_capacity(records.len());
+
+        for record in records {
+            // Parse hex bytes
+            let raw_tx_bytes = parse_hex_bytes(&record.raw_tx).map_err(|e| {
+                Self::Error::from_eth_err(TransactionConversionError::Other(e.to_string()))
+            })?;
+
+            // Decode and recover the transaction
+            type SignedTx<T> = <<T as RpcNodeCore>::Primitives as NodePrimitives>::SignedTx;
+            let recovered = recover_raw_transaction::<SignedTx<Self>>(&raw_tx_bytes)?;
+
+            // Get the hash before converting
+            let tx_hash = *recovered.tx_hash();
+
+            // Convert to pool transaction
+            let pool_transaction =
+                <<Self as RpcNodeCore>::Pool as TransactionPool>::Transaction::try_from_consensus(
+                    recovered,
+                )
+                .map_err(|e| {
+                    Self::Error::from_eth_err(TransactionConversionError::Other(e.to_string()))
+                })?;
+
+            pool_transactions.push(pool_transaction);
+            hashes.push(tx_hash);
+        }
+
+        Ok((pool_transactions, hashes))
+    }
+
+    fn wait_for_next_block(
+        &self,
+        current_height: u64,
+    ) -> impl Future<Output = Result<u64, Self::Error>> + Send {
+        async move {
+            let target_height = current_height + 1;
+
+            let timeout_duration = Duration::from_secs(10);
+            let start_wait = std::time::Instant::now();
+
+            loop {
+                let best = {
+                    let aml_evaluator = AML_EVALUATOR
+                        .get()
+                        .expect("AML_EVALUATOR not initialized")
+                        .read()
+                        .expect("poisoned lock");
+
+                    aml_evaluator.block_number
+                }; // Guard dropped here
+
+                if best >= target_height {
+                    return Ok(best);
+                }
+
+                if start_wait.elapsed() > timeout_duration {
+                    warn!(
+                        "Timeout waiting for block {} - Ghost block likely occurred or pool rejected txs",
+                        target_height
+                    );
+                    return Ok(current_height); // Return current height on timeout
+                }
+
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        }
+    }
+
     /// Fills the defaults on a given unsigned transaction.
     fn fill_transaction(
         &self,
@@ -474,15 +762,15 @@ pub trait EthTransactions: LoadTransaction<Provider: BlockReaderIdExt> {
             let chain_id = self.chain_id();
             request.as_mut().set_chain_id(chain_id.to());
 
-            if request.as_ref().has_eip4844_fields() &&
-                request.as_ref().max_fee_per_blob_gas().is_none()
+            if request.as_ref().has_eip4844_fields()
+                && request.as_ref().max_fee_per_blob_gas().is_none()
             {
                 let blob_fee = self.blob_base_fee().await?;
                 request.as_mut().set_max_fee_per_blob_gas(blob_fee.to());
             }
 
-            if request.as_ref().blob_sidecar().is_some() &&
-                request.as_ref().blob_versioned_hashes.is_none()
+            if request.as_ref().blob_sidecar().is_some()
+                && request.as_ref().blob_versioned_hashes.is_none()
             {
                 request.as_mut().populate_blob_hashes();
             }

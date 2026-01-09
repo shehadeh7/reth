@@ -443,6 +443,14 @@ where
         return Ok(BuildOutcome::Aborted { fees: total_fees, cached_reads })
     }
 
+    // if total_fees.eq(&U256::from(0)) {
+    //     // println!("dropping 0 block?");
+    //     // Release db
+    //     drop(builder);
+    //     // can skip building the block
+    //     return Ok(BuildOutcome::Aborted { fees: total_fees, cached_reads })
+    // }
+
     let BlockBuilderOutcome { execution_result, block, .. } =
         builder.finish(state_provider.as_ref())?;
 
@@ -463,6 +471,8 @@ where
     let payload = EthBuiltPayload::new(attributes.id, sealed_block, total_fees, requests)
         // add blob sidecars from the executed txs
         .with_sidecars(blob_sidecars);
+    
+    aml_evaluator.block_number = block_number;
 
     Ok(BuildOutcome::Better { payload, cached_reads })
 }

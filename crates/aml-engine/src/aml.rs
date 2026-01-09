@@ -194,6 +194,7 @@ pub static AML_EVALUATOR: OnceLock<RwLock<AmlEvaluator>> = OnceLock::new();
 pub struct AmlEvaluator {
     pub aml_support_cache: HashMap<Address, bool>, // Token addresses for AML
     motif_detector: AMLMotifDetector,
+    pub block_number: u64,
 }
 
 impl AmlEvaluator {
@@ -211,6 +212,7 @@ impl AmlEvaluator {
         Self {
             aml_support_cache: HashMap::new(),
             motif_detector: AMLMotifDetector::new(motif_config),
+            block_number: 0,
         }
     }
 

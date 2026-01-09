@@ -53,7 +53,7 @@ impl BlockCaches {
 
 #[derive(Default, Clone)]
 struct BlockOverlay {
-    // sender -> [(receiver, edge), ...]  (kept for compatibility; not used on fast path)
+    // sender -> [(receiver, edge), ...]
     outgoing_pairs: FxHashMap<Address, Vec<(Address, TransferEdge)>>,
     // receiver -> [(sender, edge), ...]
     incoming_pairs: FxHashMap<Address, Vec<(Address, TransferEdge)>>,
@@ -333,6 +333,7 @@ impl AMLMotifDetector {
                 if fan_in_count > self.config.fan_in_count_threshold
                     || fan_in_sum > self.config.fan_in_sum_threshold
                 {
+                    // println!("fan in detected");
                     return true;
                 }
             }
@@ -375,6 +376,7 @@ impl AMLMotifDetector {
 
         for (_src, (inter_set, total_flow)) in source_data.into_iter() {
             if inter_set.len() >= 2 && total_flow > self.config.scatter_gather_threshold {
+                // println!("scatter gather detected");
                 return true;
             }
         }
@@ -405,6 +407,7 @@ impl AMLMotifDetector {
                 if fan_out_count > self.config.fan_out_count_threshold
                     || fan_out_sum > self.config.fan_out_sum_threshold
                 {
+                    // println!("Fan out detected");
                     return true;
                 }
             }
@@ -422,6 +425,7 @@ impl AMLMotifDetector {
 
         let flow_volume = incoming_sum.min(fan_out_sum);
         if flow_volume > self.config.gather_scatter_threshold {
+            // println!("gather scatter detected");
             return true;
         }
 
@@ -1198,6 +1202,94 @@ mod tests {
         let phash   = parent_hash(current - 1);
         let suspicious = d.proposer_check_tx(s3, sink, U256::from(1), ZERO_ADDRESS, current, phash);
         assert!(suspicious, "fan-in with committed history should be considered in motif checks");
+    }
+
+
+    #[test]
+    fn consensus_detects_fan_in_pattern() {
+        let mut d = AMLMotifDetector::new(cfg());
+        let sink = addr("0x10000000000000000000000000000000000000ff");
+        let s1 = addr("0x1000000000000000000000000000000000000001");
+        let s2 = addr("0x1000000000000000000000000000000000000002");
+        let s3 = addr("0x1000000000000000000000000000000000000003");
+
+        let block = 10;
+        let phash = parent_hash(block - 1);
+
+        // Three senders → sink; sum > threshold
+        let txs = vec![
+            (ZERO_ADDRESS, s1, sink, U256::from(5)),
+            (ZERO_ADDRESS, s2, sink, U256::from(5)),
+            (ZERO_ADDRESS, s3, sink, U256::from(1)),
+        ];
+
+        let illicit = d.consensus_validate_block(&txs, block, phash);
+        assert_eq!(illicit, vec![2], "third tx should trigger fan-in detection");
+    }
+
+
+    #[test]
+    fn consensus_detects_fan_out_pattern() {
+        let mut d = AMLMotifDetector::new(cfg());
+        let src = addr("0x2000000000000000000000000000000000000001");
+        let r1 = addr("0x2000000000000000000000000000000000000002");
+        let r2 = addr("0x2000000000000000000000000000000000000003");
+
+        let block = 20;
+        let phash = parent_hash(block - 1);
+
+        let txs = vec![
+            (ZERO_ADDRESS, src, r1, U256::from(6)),
+            (ZERO_ADDRESS, src, r2, U256::from(6)), // triggers fan-out sum > threshold
+        ];
+
+        let illicit = d.consensus_validate_block(&txs, block, phash);
+        assert_eq!(illicit, vec![1], "second tx should trigger fan-out detection");
+    }
+
+
+    #[test]
+    fn consensus_detects_scatter_gather_pattern() {
+        let mut d = AMLMotifDetector::new(cfg());
+        let source = addr("0x3000000000000000000000000000000000000001");
+        let i1 = addr("0x3000000000000000000000000000000000000002");
+        let i2 = addr("0x3000000000000000000000000000000000000003");
+        let sink = addr("0x30000000000000000000000000000000000000aa");
+
+        let block = 30;
+        let phash = parent_hash(block - 1);
+
+        let txs = vec![
+            (ZERO_ADDRESS, source, i1, U256::from(5)),
+            (ZERO_ADDRESS, i1, sink, U256::from(5)),
+            (ZERO_ADDRESS, source, i2, U256::from(5)),
+            (ZERO_ADDRESS, i2, sink, U256::from(5)), // triggers scatter-gather
+        ];
+
+        let illicit = d.consensus_validate_block(&txs, block, phash);
+        assert_eq!(illicit, vec![3], "fourth tx should trigger scatter-gather detection");
+    }
+
+
+    #[test]
+    fn consensus_detects_gather_scatter_pattern() {
+        let mut d = AMLMotifDetector::new(cfg());
+        let s1 = addr("0x4000000000000000000000000000000000000001");
+        let s2 = addr("0x4000000000000000000000000000000000000002");
+        let hub = addr("0x40000000000000000000000000000000000000bb");
+        let recv = addr("0x40000000000000000000000000000000000000bc");
+
+        let block = 40;
+        let phash = parent_hash(block - 1);
+
+        let txs = vec![
+            (ZERO_ADDRESS, s1, hub, U256::from(5)),
+            (ZERO_ADDRESS, s2, hub, U256::from(5)),
+            (ZERO_ADDRESS, hub, recv, U256::from(10)), // triggers gather-scatter
+        ];
+
+        let illicit = d.consensus_validate_block(&txs, block, phash);
+        assert_eq!(illicit, vec![2], "third tx should trigger gather-scatter detection");
     }
 
     // -------------------------------------------------------------

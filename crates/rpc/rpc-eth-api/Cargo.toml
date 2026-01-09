@@ -58,6 +58,12 @@ tokio.workspace = true
 auto_impl.workspace = true
 dyn-clone.workspace = true
 tracing.workspace = true
+serde = { version = "1.0.228", features = ["derive"] }
+csv = "1.4.0"
+alloy-signer-local = { workspace = true, features = ["mnemonic"] }
+hex = "0.4.3"
+
+aml-engine.workspace = true
 
 [features]
 js-tracer = ["revm-inspectors/js-tracer", "reth-rpc-eth-types/js-tracer"]

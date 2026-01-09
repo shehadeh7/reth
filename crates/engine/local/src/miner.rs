@@ -21,7 +21,7 @@ use std::{
 };
 use tokio::time::Interval;
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::error;
+use tracing::{error, info};
 
 /// A mining mode for the local dev engine.
 #[derive(Debug)]
@@ -70,7 +70,7 @@ impl<Pool: TransactionPool + Unpin> Future for MiningMode<Pool> {
                 while let Poll::Ready(Some(_)) = rx.poll_next_unpin(cx) {
                     if pool.pending_and_queued_txn_count().0 == 0 {
                         continue;
-                    }
+                    } // TODO (ms): changing this?
                     if let Some(max_tx) = max_transactions {
                         *accumulated += 1;
                         // If we've reached the max transactions threshold, mine a block

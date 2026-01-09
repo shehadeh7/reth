@@ -8,6 +8,7 @@ use alloy_dyn_abi::TypedData;
 use alloy_eips::{eip2930::AccessListResult, BlockId, BlockNumberOrTag};
 use alloy_json_rpc::RpcObject;
 use alloy_primitives::{Address, Bytes, B256, B64, U256, U64};
+use alloy_primitives::private::serde;
 use alloy_rpc_types_eth::{
     simulate::{SimulatePayload, SimulatedBlock},
     state::{EvmOverrides, StateOverride},
@@ -21,6 +22,7 @@ use reth_rpc_convert::RpcTxReq;
 use reth_rpc_eth_types::FillTransaction;
 use reth_rpc_server_types::{result::internal_rpc_err, ToRpcResult};
 use tracing::trace;
+use crate::helpers::transaction::LoadTestResult;
 
 /// Helper trait, unifies functionality that must be supported to implement all RPC methods for
 /// server.
@@ -48,6 +50,15 @@ impl<T> FullEthApiServer for T where
         > + FullEthApi
         + Clone
 {
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct InjectResult {
+    pub block_number: u64,
+    pub total: usize,
+    pub succeeded: usize,
+    pub failed: usize,
+    pub hashes: Vec<B256>,
 }
 
 /// Eth rpc interface: <https://ethereum.github.io/execution-apis/api-documentation>
@@ -97,6 +108,12 @@ pub trait EthApi<
     /// Returns the number of transactions in a block from a block matching the given block hash.
     #[method(name = "getBlockTransactionCountByHash")]
     async fn block_transaction_count_by_hash(&self, hash: B256) -> RpcResult<Option<U256>>;
+
+    #[method(name = "mahmoudTest")]
+    async fn testing_rpc(&self, requests: Vec<Bytes>) -> RpcResult<Vec<B256>>;
+
+    #[method(name = "loadTestFromCsv")]
+    async fn load_test_from_csv(&self, csv_path: String) -> RpcResult<LoadTestResult> ;
 
     /// Returns the number of transactions in a block matching the given block number.
     #[method(name = "getBlockTransactionCountByNumber")]
@@ -471,6 +488,17 @@ where
     async fn block_transaction_count_by_hash(&self, hash: B256) -> RpcResult<Option<U256>> {
         trace!(target: "rpc::eth", ?hash, "Serving eth_getBlockTransactionCountByHash");
         Ok(EthBlocks::block_transaction_count(self, hash.into()).await?.map(U256::from))
+    }
+
+    async fn testing_rpc(&self, requests: Vec<Bytes>) -> RpcResult<Vec<B256>> {
+        // as part of this rpc call, have a method which will read from csv and send bunch of txs at once
+        // then using python/typescript whatever, keep checking, if block number changes, send more txs etc
+        trace!(target: "rpc::eth", count = requests.len(), "Serving eth_sendTransactionsBatch");
+        Ok(EthTransactions::send_transactions_batch(self, requests).await?)
+    }
+
+    async fn load_test_from_csv(&self, csv_path: String) -> RpcResult<LoadTestResult> {
+        Ok(EthTransactions::load_test_from_csv(self, csv_path).await?)
     }
 
     /// Handler for: `eth_getBlockTransactionCountByNumber`
