@@ -2624,7 +2624,7 @@ where
         self.metrics.engine.executed_blocks.set(self.state.tree_state.block_count() as f64);
 
         // check receipts from executed block receipt to figure out transactions that run
-        info!("Inside block commit, about to call commit aml {:?} {:?}", block_num_hash, executed.recovered_block.number());
+        // info!("Inside block commit, about to call commit aml {:?} {:?}", block_num_hash, executed.recovered_block.number());
         let mut aml_evaluator = AML_EVALUATOR
             .get()
             .expect("AML_EVALUATOR not initialized")
@@ -2683,10 +2683,6 @@ where
             let elapsed = start.elapsed().as_micros();
             log_block_commit(block_number, successful_txs.len(), elapsed);
             aml_evaluator.measure_memory_overhead(block_number);
-            // println!(
-            //     "Block updated profiles batch took {:?}",
-            //     elapsed,
-            // );
         }
 
         // emit insert event

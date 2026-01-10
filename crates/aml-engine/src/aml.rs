@@ -68,7 +68,7 @@ lazy_static::lazy_static! {
             .append(true)
             .open(format!("experiment_logs/{}/mempool_latency.csv", *RUN_TIMESTAMP))
             .expect("Failed to open mempool_latency.csv");
-        writeln!(file, "unix_timestamp,block_number,tx_hash,sender,recipient,amount,latency_micros,passed")
+        writeln!(file, "unix_timestamp,block_number,latency_micros,passed")
             .expect("Failed to write header");
         file
     });
@@ -196,7 +196,7 @@ pub struct AmlEvaluator {
 impl AmlEvaluator {
     pub fn new() -> Self {
         let motif_config: Config = Config {
-            window_blocks: 100,
+            window_blocks: 1,
             fan_in_count_threshold: 100000000000,
             fan_in_sum_threshold: U256::from_str("100000000000000000000000000000000").unwrap(),
             scatter_gather_threshold: U256::from_str("100000000000000000000000000000000").unwrap(),

@@ -44,6 +44,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::hash::Hash;
 use std::str::FromStr;
 use std::{sync::Arc, time::Duration};
+use std::time::Instant;
 use tracing::{info, warn};
 use aml_engine::aml::{AML_EVALUATOR};
 
@@ -82,7 +83,8 @@ struct CsvRecord {
 pub struct LoadTestResult {
     pub total_transactions: usize,
     pub blocks_processed: usize,
-    pub transaction_hashes: Vec<B256>,
+    pub duration_secs: f64,
+    pub tps: f64,
 }
 
 #[cfg(feature = "sol-types")]
@@ -565,6 +567,8 @@ pub trait EthTransactions: LoadTransaction<Provider: BlockReaderIdExt> {
 
             info!("All {} batches pre-decoded and ready", batches_prepared.len());
 
+            let start_time = Instant::now();
+
             // 2. Process each block batch
             for (csv_block_num, pool_transactions, batch_hashes) in batches_prepared {
                 info!("CSV Block {}: Submitting {} transactions", csv_block_num, pool_transactions.len());
@@ -593,54 +597,23 @@ pub trait EthTransactions: LoadTransaction<Provider: BlockReaderIdExt> {
                 tokio::time::sleep(Duration::from_millis(1)).await;
             }
 
+            // 2127 blocks
+
+            let duration = start_time.elapsed();
+            let duration_secs = duration.as_secs_f64();
+            let tps = if duration_secs > 0.0 {
+                total_txs as f64 / duration_secs
+            } else {
+                0.0
+            };
+
             Ok(LoadTestResult {
                 total_transactions: total_txs,
                 blocks_processed,
-                transaction_hashes: all_hashes,
+                duration_secs,
+                tps,
             })
         }
-    }
-
-    async fn load_test_from_csv_bulk(
-        &self,
-        csv_path: String,
-    ) -> Result<LoadTestResult, Self::Error> {
-        // Read all transactions
-        let transactions_by_block = self.read_csv_file(&csv_path)?;
-
-        // Flatten all transactions into one big batch
-        let all_records: Vec<CsvRecord> =
-            transactions_by_block.into_iter().flat_map(|(_, records)| records).collect();
-
-        info!("Loading {} transactions in bulk", all_records.len());
-
-        let (pool_transactions, batch_hashes) = self.decode_transactions(all_records)?;
-
-        // Submit everything at once
-        let outcomes =
-            self.pool().add_transactions(TransactionOrigin::Local, pool_transactions).await;
-
-        let success_count = outcomes.iter().filter(|o| o.is_ok()).count();
-
-        // Track successful transaction hashes
-        let mut successful_hashes = Vec::new();
-        for (idx, outcome) in outcomes.iter().enumerate() {
-            if outcome.is_ok() {
-                successful_hashes.push(batch_hashes[idx]);
-            }
-        }
-
-        info!(
-            "Bulk injection complete: {}/{} transactions accepted",
-            success_count,
-            outcomes.len()
-        );
-
-        Ok(LoadTestResult {
-            total_transactions: success_count,
-            blocks_processed: 1, // All in one go
-            transaction_hashes: successful_hashes,
-        })
     }
 
     /// Build a batch of signed transactions from CSV records
@@ -718,7 +691,6 @@ pub trait EthTransactions: LoadTransaction<Provider: BlockReaderIdExt> {
 
                     aml_evaluator.block_number
                 }; // Guard dropped here
-                info!("Best is {}, target height: {}", best, target_height);
 
                 if best >= target_height {
                     return Ok(best);

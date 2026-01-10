@@ -373,7 +373,7 @@ where
                                 pool.remove_transactions_and_descendants(vec![*pool_tx.hash()]);
                                 return CommitChanges::No; // TODO: Figure out if gas should still be charged for failed AML cases?
                             } else {
-                                // println!("AML passed ✅");
+                                // println!("AML passed");
                             }
                         // }
 
@@ -471,7 +471,7 @@ where
     let payload = EthBuiltPayload::new(attributes.id, sealed_block, total_fees, requests)
         // add blob sidecars from the executed txs
         .with_sidecars(blob_sidecars);
-    
+
     aml_evaluator.block_number = block_number;
 
     Ok(BuildOutcome::Better { payload, cached_reads })
