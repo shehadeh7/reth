@@ -1,0 +1,5 @@
+"total_transactions":200000,"blocks_processed":2127,"duration_secs":328.294274923,"tps":609.2095271746946 < This had a lot of prints
+"total_transactions":200000,"blocks_processed":2127,"duration_secs":325.765842965,"tps":613.9379076077287
+"total_transactions":200000,"blocks_processed":2127,"duration_secs":322.588836983,"tps":619.9842557184944 < Removed most prints
+"jsonrpc":"2.0","id":1,"result":{"total_transactions":200000,"blocks_processed":2127,"duration_secs":298.28048476,"tps":670.5098396260231
+"jsonrpc":"2.0","id":1,"result":{"total_transactions":200000,"blocks_processed":2127,"duration_secs":296.69906418,"tps":674.083689993255

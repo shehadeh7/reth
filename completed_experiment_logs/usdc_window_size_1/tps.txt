@@ -1,0 +1,6 @@
+"jsonrpc":"2.0","id":1,"result":{"total_transactions":200000,"blocks_processed":2127,"duration_secs":342.919264995,"tps":583.2276585653948 < first run
+"jsonrpc":"2.0","id":1,"result":{"total_transactions":200000,"blocks_processed":2127,"duration_secs":341.227326284,"tps":586.1195296930646
+{"jsonrpc":"2.0","id":1,"result":{"total_transactions":200000,"blocks_processed":2127,"duration_secs":317.899823736,"tps":629.1290056394938}
+"jsonrpc":"2.0","id":1,"result":{"total_transactions":200000,"blocks_processed":2127,"duration_secs":308.270937378,"tps":648.7799391700723}
+"jsonrpc":"2.0","id":1,"result":{"total_transactions":200000,"blocks_processed":2127,"duration_secs":307.590696387,"tps":650.2147247924785
+"jsonrpc":"2.0","id":1,"result":{"total_transactions":200000,"blocks_processed":2127,"duration_secs":307.579766217,"tps":650.2378308555525}

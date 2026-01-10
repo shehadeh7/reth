@@ -1,0 +1,5 @@
+"jsonrpc":"2.0","id":1,"result":{"total_transactions":200000,"blocks_processed":2127,"duration_secs":359.62326083,"tps":556.1375522217496 < first run
+"jsonrpc":"2.0","id":1,"result":{"total_transactions":200000,"blocks_processed":2127,"duration_secs":356.740798696,"tps":560.6311381570681
+
+jsonrpc":"2.0","id":1,"result":{"total_transactions":200000,"blocks_processed":2127,"duration_secs":325.739875691,"tps":613.9868494016432}
+"jsonrpc":"2.0","id":1,"result":{"total_transactions":200000,"blocks_processed":2127,"duration_secs":327.611617437,"tps":610.4789615357892}
