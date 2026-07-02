@@ -28,6 +28,7 @@ revm-primitives.workspace = true
 alloy-eips = { workspace = true, features = ["kzg"] }
 alloy-primitives.workspace = true
 alloy-consensus = { workspace = true, features = ["kzg"] }
+alloy-rlp.workspace = true
 
 # async/futures
 parking_lot.workspace = true
@@ -53,6 +54,8 @@ log = "0.4.27"
 petgraph = "0.8.3"
 lazy_static = "1.5.0"
 chrono = "0.4.42"
+csv = "1.4.0"
+hex = "0.4.3"
 
 [dev-dependencies]
 reth-provider = { workspace = true, features = ["test-utils"] }
