@@ -1,19 +1,15 @@
-use crate::account_profile::{AccountProfile};
 use alloy_primitives::{keccak256, Address, FixedBytes, B256, U256};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::num::NonZeroUsize;
 use std::str::FromStr;
 use std::sync::{Mutex, OnceLock, RwLock};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use lru::LruCache;
+use std::time::{SystemTime, UNIX_EPOCH};
 use revm_primitives::KECCAK_EMPTY;
 use reth_provider::StateProvider;
-use crate::aml_db::{AccountProfileDb, AmlDb};
 use crate::aml_graph::{AMLMotifDetector, Config};
-use crate::aml_rules::{AmlRule, InboundSumRule, OutboundCountRule, OutboundSumRule};
+use crate::aml_rules::{AmlRule};
 use chrono::Local;
 
 
@@ -26,33 +22,6 @@ use chrono::Local;
 // ]);
 
 // 1_000 * 1e18 = 1000000000000000000000
-pub const DAILY_LIMIT: U256 = U256::from_limbs([
-    0x35C9ADC5DEA00000,
-    0x36,
-    0x0,
-    0x0,
-]);
-
-// 10_000 * 1e18 = 10000000000000000000000
-pub const WEEKLY_LIMIT: U256 = U256::from_limbs([
-    0x19E0C9BAB2400000,
-    0x21E,
-    0x0,
-    0x0,
-]);
-
-// 100_000 * 1e18 = 100000000000000000000000
-pub const MONTHLY_LIMIT: U256 = U256::from_limbs([
-    0x02c7e14af6800000,
-    0x152d,
-    0x0,
-    0x0,
-]);
-
-const MONTHLY_WINDOW_BLOCKS: u64 = 216_000; // ~30 days
-const DAILY_WINDOW_BLOCKS: u64 = 7_200;   // ~1 day at 12s/block
-const WEEKLY_WINDOW_BLOCKS: u64 = 50_400; // ~1 week
-const WINDOWS: &[u64] = &[7200, 50400, 216000];  // daily, weekly, monthly assuming 12s/block
 
 lazy_static::lazy_static! {
     static ref RUN_TIMESTAMP: String = {
@@ -196,13 +165,15 @@ pub struct AmlEvaluator {
 impl AmlEvaluator {
     pub fn new() -> Self {
         let motif_config: Config = Config {
-            window_blocks: 1,
+            window_blocks: 300,
             fan_in_count_threshold: 100000000000,
             fan_in_sum_threshold: U256::from_str("100000000000000000000000000000000").unwrap(),
             scatter_gather_threshold: U256::from_str("100000000000000000000000000000000").unwrap(),
             gather_scatter_threshold: U256::from_str("100000000000000000000000000000000").unwrap(),
             fan_out_count_threshold: 100000000000,
             fan_out_sum_threshold: U256::from_str("100000000000000000000000000000000").unwrap(),
+            scatter_gather_count_threshold: 100000000000,
+            gather_scatter_count_threshold: 100000000000,
         };
 
         Self {
