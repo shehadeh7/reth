@@ -211,7 +211,8 @@ impl AmlEvaluator {
         }
         // let filtered: Vec<(Address, Address, U256)> =
         //     transactions.iter().map(|&(_, a, b, v)| (a, b, v)).collect();
-        self.motif_detector.consensus_validate_block(&transactions, block_number, parent_hash)
+        // self.motif_detector.consensus_validate_block(&transactions, block_number, parent_hash)
+        self.motif_detector.consensus_validate_block_parallel_buckets(&transactions, block_number, parent_hash)
     }
 
     pub fn update_profiles_batch(

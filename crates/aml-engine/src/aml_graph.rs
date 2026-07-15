@@ -1,16 +1,16 @@
 use std::io::Write;
 use petgraph::stable_graph::{StableGraph, NodeIndex, EdgeIndex};
-use petgraph::Direction::{Incoming};
+use petgraph::Direction::{Incoming, Outgoing};
 use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::fs::OpenOptions;
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use alloy_primitives::{Address, B256, U256};
 use chrono::Local;
 use lazy_static::lazy_static;
-use petgraph::Outgoing;
 use rustc_hash::{FxHashMap, FxHashSet};
+use rayon::prelude::*;
 
 /// ---------------------------------------------------------------------------
 /// Public Types
@@ -147,6 +147,18 @@ lazy_static! {
             .expect("Failed to write header");
         file
     });
+
+    static ref BUCKET_LOG: Mutex<std::fs::File> = Mutex::new({
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(format!("experiment_logs_patterns/{}/bucket.csv", *RUN_TIMESTAMP))
+            .expect("Failed to open bucket.csv");
+        writeln!(file, "unix_timestamp,block_number,number_of_buckets,partition_time")
+            .expect("Failed to write header");
+        file
+    });
+
 }
 
 fn get_unix_timestamp() -> u64 {
@@ -168,6 +180,68 @@ pub fn log_pattern_counts(block_number: u64, counts: &MotifCounts) {
             counts.scatter_gather,
             counts.gather_scatter,
         ).ok();
+    }
+}
+
+pub fn log_bucket_count(
+    block_number: u64,
+    num_buckets: usize,
+    latency_micros: u128,
+) {
+    if let Ok(mut file) = BUCKET_LOG.lock() {
+        writeln!(
+            file,
+            "{},{},{},{}",
+            get_unix_timestamp(),
+            block_number,
+            num_buckets,
+            latency_micros
+        ).ok();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Union-Find for dependency buckets
+// ---------------------------------------------------------------------------
+
+struct UnionFind {
+    parent: Vec<usize>,
+    size: Vec<usize>,
+}
+
+impl UnionFind {
+    fn new(n: usize) -> Self {
+        Self {
+            parent: (0..n).collect(),
+            size: vec![1; n],
+        }
+    }
+
+    fn find(&mut self, x: usize) -> usize {
+        let p = self.parent[x];
+
+        if p != x {
+            let r = self.find(p);
+            self.parent[x] = r;
+        }
+
+        self.parent[x]
+    }
+
+    fn union(&mut self, a: usize, b: usize) {
+        let mut ra = self.find(a);
+        let mut rb = self.find(b);
+
+        if ra == rb {
+            return;
+        }
+
+        if self.size[ra] < self.size[rb] {
+            std::mem::swap(&mut ra, &mut rb);
+        }
+
+        self.parent[rb] = ra;
+        self.size[ra] += self.size[rb];
     }
 }
 
@@ -976,6 +1050,698 @@ impl AMLMotifDetector {
 
         total
     }
+
+    // ----------------------------------------------------------------------------
+    // Dependency bucketing for parallel validator-side validation
+    // ----------------------------------------------------------------------------
+
+    /// Groups transaction indices into independent buckets.
+    ///
+    /// Correctness invariant:
+    /// If tx_i can affect the AML verdict of tx_j under the original sequential
+    /// algorithm, then tx_i and tx_j must be placed in the same bucket.
+    ///
+    /// False positives are safe: they only create larger buckets and reduce
+    /// parallelism. False negatives are unsafe: they can make the parallel result
+    /// differ from the sequential baseline.
+    ///
+    /// This assumes every validator has the same full graph. We are splitting
+    /// work, not graph state.
+    fn partition_into_buckets(
+        &self,
+        txs: &[(Address, Address, Address, U256)],
+    ) -> Vec<Vec<usize>> {
+        let n = txs.len();
+
+        if n == 0 {
+            return Vec::new();
+        }
+
+        let mut uf = UnionFind::new(n);
+        let mut owner: FxHashMap<Address, usize> = FxHashMap::default();
+
+        // Cache historical SG intermediaries per receiver:
+        // sg_intermediary_cache[to] = { inter | historical edge inter -> to exists }.
+        let mut sg_intermediary_cache: FxHashMap<Address, Vec<Address>> = FxHashMap::default();
+
+        // Tracks addresses that appeared as receivers in earlier candidate txs.
+        //
+        // This makes the in-block SG case explicit:
+        //
+        //      previous candidate: src -> inter
+        //      historical graph:   inter -> to
+        //      current candidate:  x -> to
+        //
+        // The previous candidate may create new flow into an SG intermediary for
+        // the current receiver `to`, so it must be in the same bucket.
+        let mut in_block_receiver_owner: FxHashMap<Address, usize> = FxHashMap::default();
+
+        fn touch(
+            uf: &mut UnionFind,
+            owner: &mut FxHashMap<Address, usize>,
+            addr: Address,
+            idx: usize,
+        ) {
+            match owner.entry(addr) {
+                std::collections::hash_map::Entry::Occupied(e) => {
+                    uf.union(*e.get(), idx);
+                }
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert(idx);
+                }
+            }
+        }
+
+        for (idx, &(_token, from, to, _amount)) in txs.iter().enumerate() {
+            // Direct dependencies.
+            //
+            // This captures:
+            // - same sender fan-out interactions
+            // - same receiver fan-in interactions
+            // - gather-scatter hub interactions
+            // - same-block two-hop chains sharing the intermediary directly
+            touch(&mut uf, &mut owner, from, idx);
+            touch(&mut uf, &mut owner, to, idx);
+
+            // Scatter-Gather dependency expansion.
+            //
+            // When evaluating SG for receiver `to`, the algorithm scans existing
+            // intermediaries `inter` with historical edges:
+            //
+            //      inter -> to
+            //
+            // and then checks incoming edges into each `inter`.
+            //
+            // Therefore, any candidate transaction touching such an intermediary
+            // can affect this tx's SG verdict and must be bucketed together.
+            let inters = sg_intermediary_cache.entry(to).or_insert_with(|| {
+                let mut v = Vec::new();
+
+                if let Some(&to_idx) = self.node_map.get(&to) {
+                    for nbr in self.graph.neighbors_directed(to_idx, Incoming) {
+                        if let Some(&inter) = self.graph.node_weight(nbr) {
+                            v.push(inter);
+                        }
+                    }
+                }
+
+                v
+            });
+
+            for &inter in inters.iter() {
+                // If any earlier/future tx touches this historical intermediary,
+                // it must be in the same bucket.
+                touch(&mut uf, &mut owner, inter, idx);
+
+                // Explicit in-block receiver case:
+                // if a prior tx had receiver == inter, then it may add new flow
+                // into an SG intermediary relevant for current receiver `to`.
+                //
+                // In many cases this is already covered by touch(inter, idx),
+                // because prior receivers are also touched addresses. Keeping
+                // this explicit is harmless and documents the intended dependency.
+                if let Some(&prev_idx) = in_block_receiver_owner.get(&inter) {
+                    uf.union(prev_idx, idx);
+                }
+            }
+
+            // Mark this tx's receiver for later SG dependency expansion.
+            //
+            // If multiple txs share this receiver, direct touch(to, idx) already
+            // unions them, so keeping the first owner is sufficient.
+            in_block_receiver_owner.entry(to).or_insert(idx);
+        }
+
+        let mut groups: FxHashMap<usize, Vec<usize>> = FxHashMap::default();
+
+        for idx in 0..n {
+            let root = uf.find(idx);
+            groups.entry(root).or_default().push(idx);
+        }
+
+        let mut buckets: Vec<Vec<usize>> = groups.into_values().collect();
+
+        // Preserve original block order inside each bucket.
+        for bucket in buckets.iter_mut() {
+            bucket.sort_unstable();
+        }
+
+        // Deterministic bucket order. Not required for correctness, useful for
+        // reproducibility and debugging.
+        buckets.sort_by_key(|bucket| bucket[0]);
+
+        buckets
+    }
+
+    /// Parallel validator-side AML validation using dependency buckets.
+    ///
+    /// This function does not mutate the global graph. It returns tx indices
+    /// that should be rejected. The caller should commit accepted txs later in
+    /// original block order.
+    ///
+    /// Semantics:
+    /// - All validators still have the same full graph.
+    /// - All validators still validate the full proposed block.
+    /// - This only parallelizes independent buckets locally.
+    /// - Transactions inside each bucket are processed sequentially.
+    pub fn consensus_validate_block_parallel_buckets(
+        &self,
+        txs: &[(Address, Address, Address, U256)],
+        block: u64,
+        _parent_hash: B256,
+    ) -> Vec<usize> {
+        if txs.is_empty() {
+            return Vec::new();
+        }
+
+        let start = Instant::now();
+        let buckets = self.partition_into_buckets(txs);
+        let elapsed = start.elapsed().as_micros();
+        log_bucket_count(block, buckets.len(), elapsed);
+
+        let graph = &self.graph;
+        let node_map = &self.node_map;
+        let config = &self.config;
+
+        let mut illicit_indices: Vec<usize> = buckets
+            .par_iter()
+            .flat_map_iter(|bucket| {
+                let mut overlay = BlockOverlay::default();
+                let mut caches = BlockCaches::default();
+                let mut local_illicit = Vec::new();
+
+                // Sequential within bucket because txs in the same bucket may
+                // have prefix dependencies.
+                for &idx in bucket {
+                    let (_token, from, to, amount) = txs[idx];
+
+                    let (suspicious_from, suspicious_to) = would_be_suspicious_bucket(
+                        graph,
+                        node_map,
+                        &mut overlay,
+                        &mut caches,
+                        config,
+                        from,
+                        to,
+                        amount,
+                        block,
+                    );
+
+                    if suspicious_from.is_suspicious() || suspicious_to.is_suspicious() {
+                        local_illicit.push(idx);
+                    } else {
+                        overlay.append(from, to, TransferEdge { amount, block });
+                        update_neighbor_cache_for_edge_bucket(&mut caches, from, to);
+                    }
+                }
+
+                local_illicit
+            })
+            .collect();
+
+        illicit_indices.sort_unstable();
+        illicit_indices.dedup();
+
+        illicit_indices
+    }
+
+    /// Helper: derive accepted tx indices from rejected tx indices.
+    ///
+    /// Commit accepted txs using original block order. Do not merge bucket
+    /// overlays into the global graph; bucket overlays are local execution
+    /// artifacts only.
+    pub fn accepted_indices_from_illicit(
+        tx_count: usize,
+        illicit_indices: &[usize],
+    ) -> Vec<usize> {
+        let illicit: FxHashSet<usize> = illicit_indices.iter().copied().collect();
+
+        (0..tx_count)
+            .filter(|idx| !illicit.contains(idx))
+            .collect()
+    }
+
+}
+
+// ============================================================================
+// Bucket-local helper functions
+//
+// Bucket-local means:
+//     shared immutable committed graph
+//   + bucket-local overlay of accepted txs
+//   + bucket-local caches
+//   + ephemeral current tx being tested
+//
+// It does NOT mean a different graph truth.
+// ============================================================================
+
+fn base_pair_sum_bucket(
+    graph: &StableGraph<Address, TransferEdge>,
+    node_map: &FxHashMap<Address, NodeIndex>,
+    caches: &mut BlockCaches,
+    config: &Config,
+    a: Address,
+    b: Address,
+    current_block: u64,
+) -> (U256, u64) {
+    if let Some(v) = caches.base_pair_sum.get(&(a, b)) {
+        return *v;
+    }
+
+    let mut sum = U256::ZERO;
+    let mut maxb = 0u64;
+
+    if let (Some(&ai), Some(&bi)) = (node_map.get(&a), node_map.get(&b)) {
+        for e in graph.edges_connecting(ai, bi) {
+            let w = e.weight();
+
+            if current_block >= w.block && current_block - w.block < config.window_blocks {
+                sum += w.amount;
+                maxb = maxb.max(w.block);
+            }
+        }
+    }
+
+    let v = (sum, maxb);
+    caches.base_pair_sum.insert((a, b), v);
+    v
+}
+
+fn window_sum_full_bucket(
+    graph: &StableGraph<Address, TransferEdge>,
+    node_map: &FxHashMap<Address, NodeIndex>,
+    overlay: &BlockOverlay,
+    caches: &mut BlockCaches,
+    config: &Config,
+    a: Address,
+    b: Address,
+    current_block: u64,
+    ephemeral: Option<(Address, Address, &TransferEdge)>,
+) -> (U256, u64) {
+    let (mut sum, mut maxb) =
+        base_pair_sum_bucket(graph, node_map, caches, config, a, b, current_block);
+
+    let (osum, omax) = overlay.overlay_pair(a, b);
+
+    if omax != 0 && current_block >= omax && current_block - omax < config.window_blocks {
+        sum += osum;
+        maxb = maxb.max(omax);
+    }
+
+    if let Some((ea, eb, ew)) = ephemeral {
+        if ea == a
+            && eb == b
+            && current_block >= ew.block
+            && current_block - ew.block < config.window_blocks
+        {
+            sum += ew.amount;
+            maxb = maxb.max(ew.block);
+        }
+    }
+
+    (sum, maxb)
+}
+
+fn ensure_neighbors_cached_bucket(
+    graph: &StableGraph<Address, TransferEdge>,
+    node_map: &FxHashMap<Address, NodeIndex>,
+    overlay: &BlockOverlay,
+    caches: &mut BlockCaches,
+    addr: Address,
+    dir: petgraph::Direction,
+) {
+    let map = match dir {
+        Incoming => &mut caches.neighbors_in,
+        Outgoing => &mut caches.neighbors_out,
+    };
+
+    if map.contains_key(&addr) {
+        return;
+    }
+
+    let mut set = FxHashSet::default();
+
+    if let Some(&nidx) = node_map.get(&addr) {
+        for n in graph.neighbors_directed(nidx, dir) {
+            if let Some(&a) = graph.node_weight(n) {
+                set.insert(a);
+            }
+        }
+    }
+
+    match dir {
+        Outgoing => {
+            for (to, _e) in overlay.outgoing_slice(&addr) {
+                set.insert(*to);
+            }
+        }
+        Incoming => {
+            for (from, _e) in overlay.incoming_slice(&addr) {
+                set.insert(*from);
+            }
+        }
+    }
+
+    map.insert(addr, set);
+}
+
+fn get_neighbors_cached_bucket<'a>(
+    caches: &'a BlockCaches,
+    addr: Address,
+    dir: petgraph::Direction,
+) -> &'a FxHashSet<Address> {
+    let map = match dir {
+        Incoming => &caches.neighbors_in,
+        Outgoing => &caches.neighbors_out,
+    };
+
+    map.get(&addr).expect("neighbors not cached")
+}
+
+fn update_neighbor_cache_for_edge_bucket(
+    caches: &mut BlockCaches,
+    from: Address,
+    to: Address,
+) {
+    caches.neighbors_out.entry(from).or_default().insert(to);
+    caches.neighbors_in.entry(to).or_default().insert(from);
+}
+
+fn neighbors_to_vec_with_ephemeral_bucket(
+    graph: &StableGraph<Address, TransferEdge>,
+    node_map: &FxHashMap<Address, NodeIndex>,
+    overlay: &BlockOverlay,
+    caches: &mut BlockCaches,
+    addr: Address,
+    dir: petgraph::Direction,
+    ephemeral: Option<(Address, Address, &TransferEdge)>,
+    out: &mut Vec<Address>,
+) {
+    ensure_neighbors_cached_bucket(graph, node_map, overlay, caches, addr, dir);
+
+    out.clear();
+
+    let cached = get_neighbors_cached_bucket(caches, addr, dir);
+
+    if out.capacity() < cached.len() {
+        out.reserve(cached.len().saturating_sub(out.capacity()));
+    }
+
+    out.extend(cached.iter().copied());
+
+    if let Some((efrom, eto, _)) = ephemeral {
+        match dir {
+            Incoming if eto == addr => {
+                if !cached.contains(&efrom) {
+                    out.push(efrom);
+                }
+            }
+            Outgoing if efrom == addr => {
+                if !cached.contains(&eto) {
+                    out.push(eto);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+// ============================================================================
+// Motif checks over shared graph + bucket-local overlay/cache
+// ============================================================================
+
+fn check_motifs_against_bucket(
+    graph: &StableGraph<Address, TransferEdge>,
+    node_map: &FxHashMap<Address, NodeIndex>,
+    overlay: &BlockOverlay,
+    caches: &mut BlockCaches,
+    config: &Config,
+    to_addr: Address,
+    current_block: u64,
+    ephemeral: Option<(Address, Address, &TransferEdge)>,
+) -> MotifResult {
+    let mut result = MotifResult::default();
+
+    let mut incoming = Vec::new();
+
+    neighbors_to_vec_with_ephemeral_bucket(
+        graph,
+        node_map,
+        overlay,
+        caches,
+        to_addr,
+        Incoming,
+        ephemeral,
+        &mut incoming,
+    );
+
+    // 1) FAN-IN
+    let mut fan_in_count = 0u64;
+    let mut fan_in_sum = U256::ZERO;
+
+    for &src_addr in &incoming {
+        let (neighbor_total, _maxb) = window_sum_full_bucket(
+            graph,
+            node_map,
+            overlay,
+            caches,
+            config,
+            src_addr,
+            to_addr,
+            current_block,
+            ephemeral,
+        );
+
+        if neighbor_total > U256::ZERO {
+            fan_in_count += 1;
+            fan_in_sum += neighbor_total;
+
+            if fan_in_count > config.fan_in_count_threshold
+                || fan_in_sum > config.fan_in_sum_threshold
+            {
+                result.fan_in = true;
+                return result;
+            }
+        }
+    }
+
+    // 2) SCATTER-GATHER
+    let mut source_data: FxHashMap<Address, (u64, U256)> = FxHashMap::default();
+
+    for &inter_addr in &incoming {
+        let (inter_to_dest_sum, inter_to_dest_max) = window_sum_full_bucket(
+            graph,
+            node_map,
+            overlay,
+            caches,
+            config,
+            inter_addr,
+            to_addr,
+            current_block,
+            ephemeral,
+        );
+
+        if inter_to_dest_sum == U256::ZERO {
+            continue;
+        }
+
+        let mut srcs = Vec::new();
+
+        // Same as baseline: no ephemeral when collecting incoming neighbors of
+        // intermediary. The current edge is still considered by pair-sum calls
+        // where relevant.
+        neighbors_to_vec_with_ephemeral_bucket(
+            graph,
+            node_map,
+            overlay,
+            caches,
+            inter_addr,
+            Incoming,
+            None,
+            &mut srcs,
+        );
+
+        for src_addr in srcs.into_iter() {
+            let (src_to_inter_sum, src_to_inter_max) = window_sum_full_bucket(
+                graph,
+                node_map,
+                overlay,
+                caches,
+                config,
+                src_addr,
+                inter_addr,
+                current_block,
+                ephemeral,
+            );
+
+            if src_to_inter_sum == U256::ZERO {
+                continue;
+            }
+
+            if src_to_inter_max <= inter_to_dest_max {
+                let bottleneck = src_to_inter_sum.min(inter_to_dest_sum);
+                let entry = source_data.entry(src_addr).or_insert((0, U256::ZERO));
+
+                entry.0 += 1;
+                entry.1 += bottleneck;
+            }
+        }
+    }
+
+    for (_src, (inter_count, total_flow)) in source_data.into_iter() {
+        if inter_count > config.scatter_gather_count_threshold
+            && total_flow > config.scatter_gather_threshold
+        {
+            result.scatter_gather = true;
+            return result;
+        }
+    }
+
+    result
+}
+
+fn check_motifs_from_bucket(
+    graph: &StableGraph<Address, TransferEdge>,
+    node_map: &FxHashMap<Address, NodeIndex>,
+    overlay: &BlockOverlay,
+    caches: &mut BlockCaches,
+    config: &Config,
+    from_addr: Address,
+    current_block: u64,
+    ephemeral: Option<(Address, Address, &TransferEdge)>,
+) -> MotifResult {
+    let mut result = MotifResult::default();
+
+    // 1) FAN-OUT
+    let mut destinations = Vec::new();
+
+    neighbors_to_vec_with_ephemeral_bucket(
+        graph,
+        node_map,
+        overlay,
+        caches,
+        from_addr,
+        Outgoing,
+        ephemeral,
+        &mut destinations,
+    );
+
+    let mut fan_out_count = 0u64;
+    let mut fan_out_sum = U256::ZERO;
+
+    for recv_addr in destinations.into_iter() {
+        let (neighbor_total, _maxb) = window_sum_full_bucket(
+            graph,
+            node_map,
+            overlay,
+            caches,
+            config,
+            from_addr,
+            recv_addr,
+            current_block,
+            ephemeral,
+        );
+
+        if neighbor_total > U256::ZERO {
+            fan_out_count += 1;
+            fan_out_sum += neighbor_total;
+
+            if fan_out_count > config.fan_out_count_threshold
+                || fan_out_sum > config.fan_out_sum_threshold
+            {
+                result.fan_out = true;
+                return result;
+            }
+        }
+    }
+
+    // 2) GATHER-SCATTER
+    let mut sources = Vec::new();
+
+    neighbors_to_vec_with_ephemeral_bucket(
+        graph,
+        node_map,
+        overlay,
+        caches,
+        from_addr,
+        Incoming,
+        ephemeral,
+        &mut sources,
+    );
+
+    let sources_len = sources.len();
+    let mut incoming_sum = U256::ZERO;
+
+    for src_addr in sources.into_iter() {
+        let (sum, _maxb) = window_sum_full_bucket(
+            graph,
+            node_map,
+            overlay,
+            caches,
+            config,
+            src_addr,
+            from_addr,
+            current_block,
+            ephemeral,
+        );
+
+        incoming_sum += sum;
+    }
+
+    let flow_volume = incoming_sum.min(fan_out_sum);
+
+    if sources_len as u64 > config.gather_scatter_count_threshold
+        && fan_out_count > config.gather_scatter_count_threshold
+        && flow_volume > config.gather_scatter_threshold
+    {
+        result.gather_scatter = true;
+        return result;
+    }
+
+    result
+}
+
+fn would_be_suspicious_bucket(
+    graph: &StableGraph<Address, TransferEdge>,
+    node_map: &FxHashMap<Address, NodeIndex>,
+    overlay: &BlockOverlay,
+    caches: &mut BlockCaches,
+    config: &Config,
+    from: Address,
+    to: Address,
+    amount: U256,
+    block: u64,
+) -> (MotifResult, MotifResult) {
+    let edge = TransferEdge { amount, block };
+    let ephemeral = Some((from, to, &edge));
+
+    let suspicious_from = check_motifs_from_bucket(
+        graph,
+        node_map,
+        overlay,
+        caches,
+        config,
+        from,
+        block,
+        ephemeral,
+    );
+
+    if suspicious_from.is_suspicious() {
+        return (suspicious_from, MotifResult::default());
+    }
+
+    let suspicious_to = check_motifs_against_bucket(
+        graph,
+        node_map,
+        overlay,
+        caches,
+        config,
+        to,
+        block,
+        ephemeral,
+    );
+
+    (suspicious_from, suspicious_to)
 }
 
 #[cfg(test)]
@@ -983,6 +1749,7 @@ mod tests {
     use super::*;
     use alloy_primitives::{Address, Bytes, U256};
     use std::str::FromStr;
+    use std::time::Instant;
     use alloy_consensus::private::alloy_rlp::Decodable;
     use alloy_consensus::transaction::SignerRecoverable;
     use alloy_consensus::{Transaction, TxEnvelope};
@@ -1011,6 +1778,30 @@ mod tests {
             gather_scatter_count_threshold: 3,
             scatter_gather_count_threshold: 3,
         }
+    }
+
+    fn same_bucket(buckets: &[Vec<usize>], a: usize, b: usize) -> bool {
+        buckets
+            .iter()
+            .any(|bucket| bucket.contains(&a) && bucket.contains(&b))
+    }
+
+    fn bucket_sizes(mut buckets: Vec<Vec<usize>>) -> Vec<usize> {
+        let mut sizes: Vec<usize> = buckets.drain(..).map(|b| b.len()).collect();
+        sizes.sort_unstable();
+        sizes
+    }
+
+    fn mk_tx(from: Address, to: Address, amount: u64) -> (Address, Address, Address, U256) {
+        (ZERO_ADDRESS, from, to, U256::from(amount))
+    }
+
+    fn commit_history(
+        d: &mut AMLMotifDetector,
+        block: u64,
+        txs: &[(Address, Address, Address, U256)],
+    ) {
+        d.block_commit(block, parent_hash(block - 1), txs);
     }
 
     // -----------------------------
@@ -2516,5 +3307,419 @@ mod tests {
         assert_eq!(base_res.false_positives, 0);
     }
 
+
+    #[test]
+    fn partition_disjoint_txs_make_separate_buckets() {
+        let d = AMLMotifDetector::new(cfg());
+
+        let txs = vec![
+            mk_tx(
+                addr("0xa000000000000000000000000000000000000001"),
+                addr("0xa000000000000000000000000000000000000002"),
+                1,
+            ),
+            mk_tx(
+                addr("0xa000000000000000000000000000000000000003"),
+                addr("0xa000000000000000000000000000000000000004"),
+                1,
+            ),
+            mk_tx(
+                addr("0xa000000000000000000000000000000000000005"),
+                addr("0xa000000000000000000000000000000000000006"),
+                1,
+            ),
+        ];
+
+        let buckets = d.partition_into_buckets(&txs);
+
+        assert_eq!(buckets.len(), 3);
+        assert_eq!(bucket_sizes(buckets), vec![1, 1, 1]);
+    }
+
+    #[test]
+    fn partition_same_sender_txs_share_bucket() {
+        let d = AMLMotifDetector::new(cfg());
+
+        let src = addr("0xb000000000000000000000000000000000000001");
+
+        let txs = vec![
+            mk_tx(
+                src,
+                addr("0xb000000000000000000000000000000000000002"),
+                1,
+            ),
+            mk_tx(
+                src,
+                addr("0xb000000000000000000000000000000000000003"),
+                1,
+            ),
+            mk_tx(
+                addr("0xb000000000000000000000000000000000000004"),
+                addr("0xb000000000000000000000000000000000000005"),
+                1,
+            ),
+        ];
+
+        let buckets = d.partition_into_buckets(&txs);
+
+        assert!(same_bucket(&buckets, 0, 1));
+        assert!(!same_bucket(&buckets, 0, 2));
+    }
+
+    #[test]
+    fn partition_same_receiver_txs_share_bucket() {
+        let d = AMLMotifDetector::new(cfg());
+
+        let sink = addr("0xc0000000000000000000000000000000000000ff");
+
+        let txs = vec![
+            mk_tx(
+                addr("0xc000000000000000000000000000000000000001"),
+                sink,
+                1,
+            ),
+            mk_tx(
+                addr("0xc000000000000000000000000000000000000002"),
+                sink,
+                1,
+            ),
+            mk_tx(
+                addr("0xc000000000000000000000000000000000000003"),
+                addr("0xc000000000000000000000000000000000000004"),
+                1,
+            ),
+        ];
+
+        let buckets = d.partition_into_buckets(&txs);
+
+        assert!(same_bucket(&buckets, 0, 1));
+        assert!(!same_bucket(&buckets, 0, 2));
+    }
+
+    #[test]
+    fn partition_transitive_dependencies_collapse_component() {
+        let d = AMLMotifDetector::new(cfg());
+
+        let a = addr("0xd000000000000000000000000000000000000001");
+        let b = addr("0xd000000000000000000000000000000000000002");
+        let c = addr("0xd000000000000000000000000000000000000003");
+        let e = addr("0xd000000000000000000000000000000000000004");
+
+        let txs = vec![
+            mk_tx(a, b, 1),
+            mk_tx(b, c, 1),
+            mk_tx(c, e, 1),
+        ];
+
+        let buckets = d.partition_into_buckets(&txs);
+
+        assert_eq!(buckets.len(), 1);
+        assert_eq!(buckets[0], vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn partition_sg_historical_intermediary_dependency_is_bucketed() {
+        let mut d = AMLMotifDetector::new(cfg());
+
+        let src = addr("0xe000000000000000000000000000000000000001");
+        let inter = addr("0xe000000000000000000000000000000000000002");
+        let sink = addr("0xe0000000000000000000000000000000000000ff");
+        let other = addr("0xe000000000000000000000000000000000000003");
+
+        // Historical edge: inter -> sink.
+        // Then a candidate tx src -> inter can affect SG evaluation for a later
+        // candidate tx other -> sink, even though src/other do not overlap directly.
+        let history = vec![mk_tx(inter, sink, 5)];
+        commit_history(&mut d, 10, &history);
+
+        let txs = vec![
+            mk_tx(src, inter, 5),
+            mk_tx(other, sink, 5),
+        ];
+
+        let buckets = d.partition_into_buckets(&txs);
+
+        assert!(
+            same_bucket(&buckets, 0, 1),
+            "candidate tx into historical SG intermediary must share bucket with tx into SG receiver"
+        );
+    }
+
+    #[test]
+    fn partition_hot_wallet_collapses_to_one_bucket() {
+        let d = AMLMotifDetector::new(cfg());
+
+        let hot = addr("0xf0000000000000000000000000000000000000aa");
+
+        let txs = vec![
+            mk_tx(hot, addr("0xf000000000000000000000000000000000000001"), 1),
+            mk_tx(hot, addr("0xf000000000000000000000000000000000000002"), 1),
+            mk_tx(hot, addr("0xf000000000000000000000000000000000000003"), 1),
+            mk_tx(hot, addr("0xf000000000000000000000000000000000000004"), 1),
+        ];
+
+        let buckets = d.partition_into_buckets(&txs);
+
+        assert_eq!(buckets.len(), 1);
+        assert_eq!(buckets[0], vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn parallel_matches_sequential_on_disjoint_clean_block() {
+        let mut seq = AMLMotifDetector::new(cfg());
+        let par = AMLMotifDetector::new(cfg());
+
+        let txs = vec![
+            mk_tx(
+                addr("0x1100000000000000000000000000000000000001"),
+                addr("0x1100000000000000000000000000000000000002"),
+                1,
+            ),
+            mk_tx(
+                addr("0x1100000000000000000000000000000000000003"),
+                addr("0x1100000000000000000000000000000000000004"),
+                1,
+            ),
+            mk_tx(
+                addr("0x1100000000000000000000000000000000000005"),
+                addr("0x1100000000000000000000000000000000000006"),
+                1,
+            ),
+        ];
+
+        let seq_rejected = seq.consensus_validate_block(&txs, 20, parent_hash(19));
+        let par_rejected = par.consensus_validate_block_parallel_buckets(&txs, 20, parent_hash(19));
+
+        assert_eq!(seq_rejected, par_rejected);
+    }
+
+    #[test]
+    fn parallel_matches_sequential_on_fan_out_block() {
+        let mut seq = AMLMotifDetector::new(cfg());
+        let par = AMLMotifDetector::new(cfg());
+
+        let src = addr("0x2200000000000000000000000000000000000001");
+
+        let txs = vec![
+            mk_tx(src, addr("0x2200000000000000000000000000000000000002"), 6),
+            mk_tx(src, addr("0x2200000000000000000000000000000000000003"), 6),
+            mk_tx(src, addr("0x2200000000000000000000000000000000000004"), 1),
+        ];
+
+        let seq_rejected = seq.consensus_validate_block(&txs, 20, parent_hash(19));
+        let par_rejected = par.consensus_validate_block_parallel_buckets(&txs, 20, parent_hash(19));
+
+        assert_eq!(seq_rejected, par_rejected);
+    }
+
+    #[test]
+    fn parallel_matches_sequential_on_fan_in_block() {
+        let mut seq = AMLMotifDetector::new(cfg());
+        let par = AMLMotifDetector::new(cfg());
+
+        let sink = addr("0x33000000000000000000000000000000000000ff");
+
+        let txs = vec![
+            mk_tx(addr("0x3300000000000000000000000000000000000001"), sink, 5),
+            mk_tx(addr("0x3300000000000000000000000000000000000002"), sink, 5),
+            mk_tx(addr("0x3300000000000000000000000000000000000003"), sink, 1),
+        ];
+
+        let seq_rejected = seq.consensus_validate_block(&txs, 20, parent_hash(19));
+        let par_rejected = par.consensus_validate_block_parallel_buckets(&txs, 20, parent_hash(19));
+
+        assert_eq!(seq_rejected, par_rejected);
+    }
+
+    #[test]
+    fn parallel_matches_sequential_on_scatter_gather_candidate_block() {
+        let mut seq = AMLMotifDetector::new(cfg());
+        let par = AMLMotifDetector::new(cfg());
+
+        let source = addr("0x4400000000000000000000000000000000000001");
+        let i1 = addr("0x4400000000000000000000000000000000000002");
+        let i2 = addr("0x4400000000000000000000000000000000000003");
+        let i3 = addr("0x4400000000000000000000000000000000000004");
+        let i4 = addr("0x4400000000000000000000000000000000000005");
+        let sink = addr("0x44000000000000000000000000000000000000ff");
+
+        // Need > scatter_gather_count_threshold, and cfg threshold is 3,
+        // so use 4 intermediaries.
+        let txs = vec![
+            mk_tx(source, i1, 3),
+            mk_tx(i1, sink, 3),
+            mk_tx(source, i2, 3),
+            mk_tx(i2, sink, 3),
+            mk_tx(source, i3, 3),
+            mk_tx(i3, sink, 3),
+            mk_tx(source, i4, 3),
+            mk_tx(i4, sink, 3),
+        ];
+
+        let seq_rejected = seq.consensus_validate_block(&txs, 20, parent_hash(19));
+        let par_rejected = par.consensus_validate_block_parallel_buckets(&txs, 20, parent_hash(19));
+
+        assert_eq!(seq_rejected, par_rejected);
+    }
+
+    #[test]
+    fn parallel_matches_sequential_on_gather_scatter_candidate_block() {
+        let mut seq = AMLMotifDetector::new(cfg());
+        let par = AMLMotifDetector::new(cfg());
+
+        let s1 = addr("0x5500000000000000000000000000000000000001");
+        let s2 = addr("0x5500000000000000000000000000000000000002");
+        let s3 = addr("0x5500000000000000000000000000000000000003");
+        let s4 = addr("0x5500000000000000000000000000000000000004");
+        let hub = addr("0x55000000000000000000000000000000000000aa");
+        let r1 = addr("0x55000000000000000000000000000000000000bb");
+        let r2 = addr("0x55000000000000000000000000000000000000bc");
+        let r3 = addr("0x55000000000000000000000000000000000000bd");
+        let r4 = addr("0x55000000000000000000000000000000000000be");
+
+        // Need sources_len > 3 and fan_out_count > 3.
+        let txs = vec![
+            mk_tx(s1, hub, 3),
+            mk_tx(s2, hub, 3),
+            mk_tx(s3, hub, 3),
+            mk_tx(s4, hub, 3),
+            mk_tx(hub, r1, 3),
+            mk_tx(hub, r2, 3),
+            mk_tx(hub, r3, 3),
+            mk_tx(hub, r4, 3),
+        ];
+
+        let seq_rejected = seq.consensus_validate_block(&txs, 20, parent_hash(19));
+        let par_rejected = par.consensus_validate_block_parallel_buckets(&txs, 20, parent_hash(19));
+
+        assert_eq!(seq_rejected, par_rejected);
+    }
+
+    #[test]
+    fn parallel_matches_sequential_with_historical_sg_intermediary() {
+        let mut seq = AMLMotifDetector::new(cfg());
+        let mut par = AMLMotifDetector::new(cfg());
+
+        let source = addr("0x6600000000000000000000000000000000000001");
+        let i1 = addr("0x6600000000000000000000000000000000000002");
+        let i2 = addr("0x6600000000000000000000000000000000000003");
+        let i3 = addr("0x6600000000000000000000000000000000000004");
+        let i4 = addr("0x6600000000000000000000000000000000000005");
+        let sink = addr("0x66000000000000000000000000000000000000ff");
+
+        let history = vec![
+            mk_tx(i1, sink, 3),
+            mk_tx(i2, sink, 3),
+            mk_tx(i3, sink, 3),
+            mk_tx(i4, sink, 3),
+        ];
+
+        commit_history(&mut seq, 18, &history);
+        commit_history(&mut par, 18, &history);
+
+        let txs = vec![
+            mk_tx(source, i1, 3),
+            mk_tx(source, i2, 3),
+            mk_tx(source, i3, 3),
+            mk_tx(source, i4, 3),
+            mk_tx(addr("0x6600000000000000000000000000000000000006"), sink, 1),
+        ];
+
+        let seq_rejected = seq.consensus_validate_block(&txs, 20, parent_hash(19));
+        let par_rejected = par.consensus_validate_block_parallel_buckets(&txs, 20, parent_hash(19));
+
+        assert_eq!(seq_rejected, par_rejected);
+    }
+
+    #[test]
+    fn synthetic_dataset_bucketing_only_timing() {
+        use std::collections::BTreeMap;
+        use std::time::Instant;
+
+        let (dataset, _groups) = build_dataset();
+
+        // Group synthetic txs by block, preserving block order.
+        let mut by_block: BTreeMap<u64, Vec<(Address, Address, Address, U256)>> = BTreeMap::new();
+
+        for tx in dataset.iter() {
+            by_block
+                .entry(tx.block)
+                .or_default()
+                .push((tx.token, tx.from, tx.to, tx.amount));
+        }
+
+        let mut detector = AMLMotifDetector::new(cfg());
+
+        let mut total_ns = 0u128;
+        let mut total_txs = 0usize;
+        let mut total_blocks = 0usize;
+        let mut total_buckets = 0usize;
+        let mut max_bucket_size = 0usize;
+        let mut max_block_txs = 0usize;
+
+        for (block, txs) in by_block.iter() {
+            if txs.is_empty() {
+                continue;
+            }
+
+            let t0 = Instant::now();
+            let buckets = detector.partition_into_buckets(txs);
+            total_ns += t0.elapsed().as_nanos();
+
+            total_blocks += 1;
+            total_txs += txs.len();
+            total_buckets += buckets.len();
+            max_block_txs = max_block_txs.max(txs.len());
+
+            if let Some(local_max) = buckets.iter().map(|b| b.len()).max() {
+                max_bucket_size = max_bucket_size.max(local_max);
+            }
+
+            // Important: this is bucketing-only timing, so we commit all txs just to
+            // let the graph evolve across blocks. This does NOT measure AML filtering.
+            detector.block_commit(*block, parent_hash(block.saturating_sub(1)), txs);
+        }
+
+        let avg_bucket_time_us = if total_blocks == 0 {
+            0.0
+        } else {
+            total_ns as f64 / total_blocks as f64 / 1_000.0
+        };
+
+        let avg_txs_per_block = if total_blocks == 0 {
+            0.0
+        } else {
+            total_txs as f64 / total_blocks as f64
+        };
+
+        let avg_buckets_per_block = if total_blocks == 0 {
+            0.0
+        } else {
+            total_buckets as f64 / total_blocks as f64
+        };
+
+        let avg_bucket_size = if total_buckets == 0 {
+            0.0
+        } else {
+            total_txs as f64 / total_buckets as f64
+        };
+
+        println!();
+        println!("================ Bucketing-only timing ================");
+        println!("blocks:                    {}", total_blocks);
+        println!("txs:                       {}", total_txs);
+        println!("max txs/block:             {}", max_block_txs);
+        println!("total buckets:             {}", total_buckets);
+        println!("max bucket size:           {}", max_bucket_size);
+        println!("avg txs/block:             {:.2}", avg_txs_per_block);
+        println!("avg buckets/block:         {:.2}", avg_buckets_per_block);
+        println!("avg bucket size:           {:.2}", avg_bucket_size);
+        println!("avg bucketing time/block:  {:.3} us", avg_bucket_time_us);
+        println!("total bucketing time:      {:.3} ms", total_ns as f64 / 1_000_000.0);
+        println!("=======================================================");
+        println!();
+
+        assert!(total_blocks > 0);
+    }
 }
 
