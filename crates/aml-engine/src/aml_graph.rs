@@ -11,6 +11,7 @@ use chrono::Local;
 use lazy_static::lazy_static;
 use rustc_hash::{FxHashMap, FxHashSet};
 use rayon::prelude::*;
+mod sampling;
 
 /// ---------------------------------------------------------------------------
 /// Public Types
@@ -72,6 +73,14 @@ impl BlockCaches {
         self.neighbors_in.clear();
         self.neighbors_out.clear();
     }
+}
+
+#[derive(Default)]
+struct BucketScratch {
+    incoming: Vec<Address>,
+    intermediary_sources: Vec<Address>,
+    destinations: Vec<Address>,
+    sources: Vec<Address>,
 }
 
 #[derive(Default, Clone)]
@@ -1079,23 +1088,10 @@ impl AMLMotifDetector {
 
         let mut uf = UnionFind::new(n);
         let mut owner: FxHashMap<Address, usize> = FxHashMap::default();
+        let mut sg_intermediary_cache:
+            FxHashMap<Address, FxHashSet<Address>> = FxHashMap::default();
 
-        // Cache historical SG intermediaries per receiver:
-        // sg_intermediary_cache[to] = { inter | historical edge inter -> to exists }.
-        let mut sg_intermediary_cache: FxHashMap<Address, Vec<Address>> = FxHashMap::default();
-
-        // Tracks addresses that appeared as receivers in earlier candidate txs.
-        //
-        // This makes the in-block SG case explicit:
-        //
-        //      previous candidate: src -> inter
-        //      historical graph:   inter -> to
-        //      current candidate:  x -> to
-        //
-        // The previous candidate may create new flow into an SG intermediary for
-        // the current receiver `to`, so it must be in the same bucket.
-        let mut in_block_receiver_owner: FxHashMap<Address, usize> = FxHashMap::default();
-
+        #[inline]
         fn touch(
             uf: &mut UnionFind,
             owner: &mut FxHashMap<Address, usize>,
@@ -1113,83 +1109,36 @@ impl AMLMotifDetector {
         }
 
         for (idx, &(_token, from, to, _amount)) in txs.iter().enumerate() {
-            // Direct dependencies.
-            //
-            // This captures:
-            // - same sender fan-out interactions
-            // - same receiver fan-in interactions
-            // - gather-scatter hub interactions
-            // - same-block two-hop chains sharing the intermediary directly
             touch(&mut uf, &mut owner, from, idx);
             touch(&mut uf, &mut owner, to, idx);
 
-            // Scatter-Gather dependency expansion.
-            //
-            // When evaluating SG for receiver `to`, the algorithm scans existing
-            // intermediaries `inter` with historical edges:
-            //
-            //      inter -> to
-            //
-            // and then checks incoming edges into each `inter`.
-            //
-            // Therefore, any candidate transaction touching such an intermediary
-            // can affect this tx's SG verdict and must be bucketed together.
             let inters = sg_intermediary_cache.entry(to).or_insert_with(|| {
-                let mut v = Vec::new();
-
+                let mut set = FxHashSet::default();
                 if let Some(&to_idx) = self.node_map.get(&to) {
                     for nbr in self.graph.neighbors_directed(to_idx, Incoming) {
                         if let Some(&inter) = self.graph.node_weight(nbr) {
-                            v.push(inter);
+                            set.insert(inter);
                         }
                     }
                 }
-
-                v
+                set
             });
 
             for &inter in inters.iter() {
-                // If any earlier/future tx touches this historical intermediary,
-                // it must be in the same bucket.
                 touch(&mut uf, &mut owner, inter, idx);
-
-                // Explicit in-block receiver case:
-                // if a prior tx had receiver == inter, then it may add new flow
-                // into an SG intermediary relevant for current receiver `to`.
-                //
-                // In many cases this is already covered by touch(inter, idx),
-                // because prior receivers are also touched addresses. Keeping
-                // this explicit is harmless and documents the intended dependency.
-                if let Some(&prev_idx) = in_block_receiver_owner.get(&inter) {
-                    uf.union(prev_idx, idx);
-                }
             }
-
-            // Mark this tx's receiver for later SG dependency expansion.
-            //
-            // If multiple txs share this receiver, direct touch(to, idx) already
-            // unions them, so keeping the first owner is sufficient.
-            in_block_receiver_owner.entry(to).or_insert(idx);
         }
 
         let mut groups: FxHashMap<usize, Vec<usize>> = FxHashMap::default();
-
         for idx in 0..n {
             let root = uf.find(idx);
             groups.entry(root).or_default().push(idx);
         }
 
         let mut buckets: Vec<Vec<usize>> = groups.into_values().collect();
-
-        // Preserve original block order inside each bucket.
-        for bucket in buckets.iter_mut() {
-            bucket.sort_unstable();
-        }
-
-        // Deterministic bucket order. Not required for correctness, useful for
-        // reproducibility and debugging.
+        // Each bucket is already internally ordered because indices were appended
+        // while iterating monotonically over 0..n.
         buckets.sort_by_key(|bucket| bucket[0]);
-
         buckets
     }
 
@@ -1228,6 +1177,7 @@ impl AMLMotifDetector {
             .flat_map_iter(|bucket| {
                 let mut overlay = BlockOverlay::default();
                 let mut caches = BlockCaches::default();
+                let mut scratch = BucketScratch::default();
                 let mut local_illicit = Vec::new();
 
                 // Sequential within bucket because txs in the same bucket may
@@ -1240,6 +1190,7 @@ impl AMLMotifDetector {
                         node_map,
                         &mut overlay,
                         &mut caches,
+                        &mut scratch,
                         config,
                         from,
                         to,
@@ -1475,6 +1426,7 @@ fn check_motifs_against_bucket(
     node_map: &FxHashMap<Address, NodeIndex>,
     overlay: &BlockOverlay,
     caches: &mut BlockCaches,
+    scratch: &mut BucketScratch,
     config: &Config,
     to_addr: Address,
     current_block: u64,
@@ -1482,7 +1434,11 @@ fn check_motifs_against_bucket(
 ) -> MotifResult {
     let mut result = MotifResult::default();
 
-    let mut incoming = Vec::new();
+    let BucketScratch {
+        incoming,
+        intermediary_sources,
+        ..
+    } = scratch;
 
     neighbors_to_vec_with_ephemeral_bucket(
         graph,
@@ -1492,14 +1448,14 @@ fn check_motifs_against_bucket(
         to_addr,
         Incoming,
         ephemeral,
-        &mut incoming,
+        incoming,
     );
 
     // 1) FAN-IN
     let mut fan_in_count = 0u64;
     let mut fan_in_sum = U256::ZERO;
 
-    for &src_addr in &incoming {
+    for &src_addr in incoming.iter() {
         let (neighbor_total, _maxb) = window_sum_full_bucket(
             graph,
             node_map,
@@ -1528,7 +1484,7 @@ fn check_motifs_against_bucket(
     // 2) SCATTER-GATHER
     let mut source_data: FxHashMap<Address, (u64, U256)> = FxHashMap::default();
 
-    for &inter_addr in &incoming {
+    for &inter_addr in incoming.iter() {
         let (inter_to_dest_sum, inter_to_dest_max) = window_sum_full_bucket(
             graph,
             node_map,
@@ -1545,7 +1501,6 @@ fn check_motifs_against_bucket(
             continue;
         }
 
-        let mut srcs = Vec::new();
 
         // Same as baseline: no ephemeral when collecting incoming neighbors of
         // intermediary. The current edge is still considered by pair-sum calls
@@ -1558,10 +1513,10 @@ fn check_motifs_against_bucket(
             inter_addr,
             Incoming,
             None,
-            &mut srcs,
+            intermediary_sources,
         );
 
-        for src_addr in srcs.into_iter() {
+        for &src_addr in intermediary_sources.iter() {
             let (src_to_inter_sum, src_to_inter_max) = window_sum_full_bucket(
                 graph,
                 node_map,
@@ -1605,6 +1560,7 @@ fn check_motifs_from_bucket(
     node_map: &FxHashMap<Address, NodeIndex>,
     overlay: &BlockOverlay,
     caches: &mut BlockCaches,
+    scratch: &mut BucketScratch,
     config: &Config,
     from_addr: Address,
     current_block: u64,
@@ -1612,8 +1568,13 @@ fn check_motifs_from_bucket(
 ) -> MotifResult {
     let mut result = MotifResult::default();
 
+    let BucketScratch {
+        destinations,
+        sources,
+        ..
+    } = scratch;
+
     // 1) FAN-OUT
-    let mut destinations = Vec::new();
 
     neighbors_to_vec_with_ephemeral_bucket(
         graph,
@@ -1623,13 +1584,13 @@ fn check_motifs_from_bucket(
         from_addr,
         Outgoing,
         ephemeral,
-        &mut destinations,
+        destinations,
     );
 
     let mut fan_out_count = 0u64;
     let mut fan_out_sum = U256::ZERO;
 
-    for recv_addr in destinations.into_iter() {
+    for &recv_addr in destinations.iter() {
         let (neighbor_total, _maxb) = window_sum_full_bucket(
             graph,
             node_map,
@@ -1656,7 +1617,6 @@ fn check_motifs_from_bucket(
     }
 
     // 2) GATHER-SCATTER
-    let mut sources = Vec::new();
 
     neighbors_to_vec_with_ephemeral_bucket(
         graph,
@@ -1666,13 +1626,13 @@ fn check_motifs_from_bucket(
         from_addr,
         Incoming,
         ephemeral,
-        &mut sources,
+        sources,
     );
 
     let sources_len = sources.len();
     let mut incoming_sum = U256::ZERO;
 
-    for src_addr in sources.into_iter() {
+    for &src_addr in sources.iter() {
         let (sum, _maxb) = window_sum_full_bucket(
             graph,
             node_map,
@@ -1706,6 +1666,7 @@ fn would_be_suspicious_bucket(
     node_map: &FxHashMap<Address, NodeIndex>,
     overlay: &BlockOverlay,
     caches: &mut BlockCaches,
+    scratch: &mut BucketScratch,
     config: &Config,
     from: Address,
     to: Address,
@@ -1720,6 +1681,7 @@ fn would_be_suspicious_bucket(
         node_map,
         overlay,
         caches,
+        scratch,
         config,
         from,
         block,
@@ -1735,6 +1697,7 @@ fn would_be_suspicious_bucket(
         node_map,
         overlay,
         caches,
+        scratch,
         config,
         to,
         block,
