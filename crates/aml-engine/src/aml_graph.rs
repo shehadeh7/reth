@@ -1,6 +1,7 @@
 use std::io::Write;
 use petgraph::stable_graph::{StableGraph, NodeIndex, EdgeIndex};
 use petgraph::Direction::{Incoming, Outgoing};
+use petgraph::visit::EdgeRef;
 use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::fs::OpenOptions;
@@ -431,6 +432,41 @@ impl AMLMotifDetector {
         (sum, maxb)
     }
 
+    /// Eligible source-to-intermediary transfers for SG, grouped by source.
+    /// Scan the graph and overlay once per intermediary, respecting the temporal cutoff.
+    #[inline]
+    fn sg_left_by_source(
+        &self,
+        inter: Address,
+        current_block: u64,
+        cutoff: u64,
+        buf: &mut FxHashMap<Address, U256>,
+    ) {
+        buf.clear();
+        let in_scope = |h: u64| {
+            h <= cutoff && current_block >= h
+                && current_block - h < self.config.window_blocks
+        };
+
+        if let Some(&n) = self.node_map.get(&inter) {
+            for e in self.graph.edges_directed(n, Incoming) {
+                let w = e.weight();
+                if in_scope(w.block) {
+                    if let Some(&src) = self.graph.node_weight(e.source()) {
+                        *buf.entry(src).or_insert(U256::ZERO) += w.amount;
+                    }
+                }
+            }
+        }
+
+        // Overlay: one pass per intermediary, not one per source.
+        for (from, t) in self.overlay.incoming_slice(&inter) {
+            if in_scope(t.block) {
+                *buf.entry(*from).or_insert(U256::ZERO) += t.amount;
+            }
+        }
+    }
+
     /// Helper: copy neighbors into a local Vec and inject ephemeral neighbor (borrow-safe)
     #[inline]
     fn neighbors_to_vec_with_ephemeral(
@@ -500,9 +536,10 @@ impl AMLMotifDetector {
         }
 
         // 2) SCATTER-GATHER
-        // Each intermediary is visited once, and each src list comes from a cached set,
-        // so a per-source intermediary count is enough; no nested FxHashSet is needed.
+        // Each intermediary is visited once. Aggregate its eligible incoming
+        // transfers by source in one pass, then apply the existing SG thresholds.
         let mut source_data: FxHashMap<Address, (u64, U256)> = FxHashMap::default();
+        let mut srcs = FxHashMap::default();
         for &inter_addr in &incoming {
             let (inter_to_dest_sum, inter_to_dest_max) =
                 self.window_sum_full(inter_addr, to_addr, current_block, ephemeral);
@@ -510,25 +547,19 @@ impl AMLMotifDetector {
                 continue;
             }
 
-            let mut srcs = Vec::new();
-            self.neighbors_to_vec_with_ephemeral(inter_addr, Incoming, None, &mut srcs);
+            self.sg_left_by_source(inter_addr, current_block, inter_to_dest_max, &mut srcs);
 
-            for src_addr in srcs.into_iter() {
-                let (src_to_inter_sum, src_to_inter_max) =
-                    self.window_sum_full(src_addr, inter_addr, current_block, ephemeral);
+            for (&src_addr, &src_to_inter_sum) in &srcs {
                 if src_to_inter_sum == U256::ZERO {
                     continue;
                 }
 
-                // Temporal ordering
-                if src_to_inter_max <= inter_to_dest_max {
-                    let bottleneck = src_to_inter_sum.min(inter_to_dest_sum);
-                    let entry = source_data
-                        .entry(src_addr)
-                        .or_insert((0, U256::ZERO));
-                    entry.0 += 1;
-                    entry.1 += bottleneck;
-                }
+                let bottleneck = src_to_inter_sum.min(inter_to_dest_sum);
+                let entry = source_data
+                    .entry(src_addr)
+                    .or_insert((0, U256::ZERO));
+                entry.0 += 1;
+                entry.1 += bottleneck;
             }
         }
         for (_src, (inter_count, total_flow)) in source_data.into_iter() {
